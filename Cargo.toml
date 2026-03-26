@@ -1,0 +1,15 @@
+[package]
+name = "space-io"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+bevy = "0.15"
+rand = "0.8"
+
+# Faster iteration builds: optimize deps, but keep game code debuggable
+[profile.dev]
+opt-level = 1
+
+[profile.dev.package."*"]
+opt-level = 3
