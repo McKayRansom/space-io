@@ -17,7 +17,7 @@ use rand::Rng;
 const G: f32 = 200.0;
 const PLANET_MASS: f32 = 1.0e5; // G·M = 2·10⁷
 const PLANET_RADIUS: f32 = 400.0;
-const THRUST: f32 = 100.0; // units/s² at full throttle
+const THRUST: f32 = 150.0; // units/s² at full throttle
 const FUEL_RATE: f32 = 15.0; // fuel/s at full throttle
 const ROT_SPEED: f32 = 2.5; // rad/s
 const START_HEIGHT: f32 = 80.0; // above surface
@@ -529,7 +529,13 @@ fn check_surface_contact(
             continue;
         }
 
-        let rel_speed = (rocket.velocity - body.velocity).length();
+        // Ignore contact if the rocket is already moving away from the surface
+        let rel_vel = rocket.velocity - body.velocity;
+        if rel_vel.dot(from_body.normalize()) > 0.0 {
+            continue;
+        }
+
+        let rel_speed = rel_vel.length();
         if rel_speed <= LANDING_MAX_SPEED {
             let normal = from_body.normalize();
             rocket.angle = (-normal.x).atan2(normal.y);
