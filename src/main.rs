@@ -7,7 +7,10 @@
 //!   Space/↑/W  main engine  (thrust)
 //!   R          reset to orbit
 
-use bevy::prelude::*;
+use bevy::{
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
+    prelude::*,
+};
 use rand::Rng;
 
 // ── Physics constants (tuned for fun, not SI realism) ─────────────────────────
@@ -18,6 +21,7 @@ const THRUST: f32 = 100.0; // units/s² at full throttle
 const FUEL_RATE: f32 = 15.0; // fuel/s at full throttle
 const ROT_SPEED: f32 = 2.5; // rad/s
 const START_HEIGHT: f32 = 80.0; // above surface
+
 
 // ── Components ────────────────────────────────────────────────────────────────
 
@@ -45,11 +49,14 @@ struct HudVel;
 struct HudFuel;
 #[derive(Component)]
 struct HudStatus;
+#[derive(Component)]
+struct HudFps;
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
 fn main() {
     App::new()
+        .add_plugins(FrameTimeDiagnosticsPlugin)
         .add_plugins(DefaultPlugins.set(WindowPlugin {
             primary_window: Some(Window {
                 title: "Space IO – 2D KSP Prototype".into(),
@@ -66,9 +73,11 @@ fn main() {
                 handle_input,
                 physics_step,
                 check_crash,
+                update_trajectory,
                 update_exhaust,
                 follow_camera,
                 update_hud,
+                update_fps,
             )
                 .chain(),
         )
@@ -204,6 +213,21 @@ fn setup(
         },
         HudStatus,
     ));
+    commands.spawn((
+        Text::new("FPS --"),
+        TextFont {
+            font_size: 14.0,
+            ..default()
+        },
+        TextColor(Color::srgba(1., 1., 1., 0.4)),
+        Node {
+            position_type: PositionType::Absolute,
+            top: Val::Px(12.),
+            right: Val::Px(12.),
+            ..default()
+        },
+        HudFps,
+    ));
     // Controls hint (bottom-left)
     commands.spawn((
         Text::new("A/D: rotate     SPACE / ↑: thrust     R: reset"),
@@ -293,6 +317,80 @@ fn physics_step(time: Res<Time>, mut q: Query<(&mut Transform, &mut Rocket)>) {
     let v = rocket.velocity;
     tf.translation.x += v.x * dt;
     tf.translation.y += v.y * dt;
+}
+
+fn update_fps(diagnostics: Res<DiagnosticsStore>, mut q: Query<&mut Text, With<HudFps>>) {
+    let Ok(mut text) = q.get_single_mut() else {
+        return;
+    };
+    if let Some(fps) = diagnostics
+        .get(&FrameTimeDiagnosticsPlugin::FPS)
+        .and_then(|d| d.smoothed())
+    {
+        *text = Text::new(format!("{fps:.0} FPS"));
+    }
+}
+
+fn update_trajectory(rocket_q: Query<(&Transform, &Rocket)>, mut gizmos: Gizmos) {
+    let Ok((rtf, rocket)) = rocket_q.get_single() else {
+        return;
+    };
+    if rocket.crashed {
+        return;
+    }
+
+    let mu = G * PLANET_MASS;
+    let pos = rtf.translation.truncate();
+    let vel = rocket.velocity;
+    let r = pos.length().max(1.0);
+
+    // Specific orbital energy: ε = v²/2 − μ/r
+    let energy = 0.5 * vel.length_squared() - mu / r;
+
+    // Specific angular momentum (scalar Z component of r × v)
+    let h = pos.x * vel.y - pos.y * vel.x;
+    if h.abs() < 0.1 {
+        return; // near-radial free-fall, skip
+    }
+
+    if energy >= 0.0 {
+        // Escape / hyperbolic trajectory — no closed ellipse to draw
+        return;
+    }
+
+    // Eccentricity vector: points from focus toward periapsis, magnitude = eccentricity
+    // In 2D: (v × h) / μ − r̂,  where v × h = Vec2(vy·h, −vx·h)
+    let e_vec = Vec2::new(vel.y * h, -vel.x * h) / mu - pos / r;
+    let ecc = e_vec.length().clamp(0.0, 0.9999);
+
+    // Orbital elements
+    let a = -mu / (2.0 * energy);          // semi-major axis
+    let b = a * (1.0 - ecc * ecc).sqrt();  // semi-minor axis
+
+    // Ellipse center: displaced from the focus (planet) opposite the eccentricity direction
+    let e_hat = if ecc > 1e-6 { e_vec / ecc } else { Vec2::X };
+    let center = -e_hat * (a * ecc);
+
+    // Rotation aligning the local +X axis with the periapsis direction
+    let rot = Vec2::from_angle(e_hat.y.atan2(e_hat.x));
+
+    let periapsis = a * (1.0 - ecc);
+    let color = if periapsis <= PLANET_RADIUS {
+        Color::srgba(1.0, 0.4, 0.2, 0.6) // impact orbit
+    } else {
+        Color::srgba(0.4, 0.9, 1.0, 0.55) // safe orbit
+    };
+
+    // Sample the ellipse and draw as a closed line strip
+    const SEGMENTS: usize = 128;
+    let points: Vec<Vec2> = (0..=SEGMENTS)
+        .map(|i| {
+            let theta = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            center + rot.rotate(Vec2::new(a * theta.cos(), b * theta.sin()))
+        })
+        .collect();
+
+    gizmos.linestrip_2d(points, color);
 }
 
 fn check_crash(mut q: Query<(&Transform, &mut Rocket)>) {
