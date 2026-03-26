@@ -14,7 +14,7 @@ use rand::Rng;
 const G: f32 = 200.0;
 const PLANET_MASS: f32 = 1.0e5; // G·M = 2·10⁷
 const PLANET_RADIUS: f32 = 200.0;
-const THRUST: f32 = 500.0; // units/s² at full throttle
+const THRUST: f32 = 100.0; // units/s² at full throttle
 const FUEL_RATE: f32 = 15.0; // fuel/s at full throttle
 const ROT_SPEED: f32 = 2.5; // rad/s
 const START_HEIGHT: f32 = 80.0; // above surface
