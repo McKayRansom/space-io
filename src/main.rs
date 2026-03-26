@@ -26,16 +26,21 @@ const MOON_MASS: f32 = 5e3; // G·M_moon = 1·10⁶
 const MOON_RADIUS: f32 = 35.0;
 const MOON_ORBIT: f32 = 880.0; // distance from planet center
 
+const LANDING_MAX_SPEED: f32 = 400.0; // max speed (or relative speed) for a safe landing
+
 
 // ── Components ────────────────────────────────────────────────────────────────
 
 #[derive(Component)]
 struct Rocket {
     velocity: Vec2,
-    angle: f32,    // radians; 0 = nose pointing +Y
+    angle: f32,        // radians; 0 = nose pointing +Y
     fuel: f32,
-    throttle: f32, // 0 or 1
+    throttle: f32,     // 0 or 1
     crashed: bool,
+    landed: bool,
+    on_moon: bool,
+    body_offset: Vec2, // offset from landed body center (moon only)
 }
 
 #[derive(Component)]
@@ -82,7 +87,7 @@ fn main() {
                 handle_input,
                 update_moon,
                 physics_step,
-                check_crash,
+                check_surface_contact,
                 update_trajectory,
                 update_exhaust,
                 follow_camera,
@@ -143,7 +148,7 @@ fn setup(
         MeshMaterial2d(materials.add(Color::srgb(0.62, 0.62, 0.68))),
         Transform::from_xyz(MOON_ORBIT, 0., 0.2),
         Moon {
-            velocity: Vec2::new(0., moon_orbital_v), // CCW orbit starting at +X
+            velocity: Vec2::new(0., -moon_orbital_v), // CW orbit starting at +X
         },
     ));
 
@@ -160,20 +165,24 @@ fn setup(
         Exhaust,
     ));
 
-    // Rocket body (a slim rectangle; nose = top when angle == 0)
+    // Rocket body (triangle; nose = top when angle == 0)
     commands.spawn((
-        Sprite {
-            color: Color::srgb(0.85, 0.85, 0.95),
-            custom_size: Some(Vec2::new(12.0, 28.0)),
-            ..default()
-        },
+        Mesh2d(meshes.add(Triangle2d::new(
+            Vec2::new(0., 16.),   // nose
+            Vec2::new(-9., -14.), // left base
+            Vec2::new(9., -14.),  // right base
+        ))),
+        MeshMaterial2d(materials.add(Color::srgb(0.85, 0.85, 0.95))),
         Transform::from_xyz(0., r0, 1.0),
         Rocket {
-            velocity: Vec2::new(orbital_v, 0.), // tangent at top → eastward
-            angle: 0.0,                          // nose up
+            velocity: Vec2::new(orbital_v, 0.),
+            angle: 0.0,
             fuel: 100.0,
             throttle: 0.0,
             crashed: false,
+            landed: false,
+            on_moon: false,
+            body_offset: Vec2::ZERO,
         },
     ));
 
@@ -287,6 +296,9 @@ fn handle_input(
         rocket.fuel = 100.0;
         rocket.throttle = 0.0;
         rocket.crashed = false;
+        rocket.landed = false;
+        rocket.on_moon = false;
+        rocket.body_offset = Vec2::ZERO;
         return;
     }
 
@@ -296,19 +308,28 @@ fn handle_input(
 
     let dt = time.delta_secs();
 
+    // Rotation is always allowed — player aims before launching
     if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
         rocket.angle += ROT_SPEED * dt;
     }
     if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
         rocket.angle -= ROT_SPEED * dt;
     }
+    tf.rotation = Quat::from_rotation_z(rocket.angle);
 
     let thrusting = keys.pressed(KeyCode::Space)
         || keys.pressed(KeyCode::ArrowUp)
         || keys.pressed(KeyCode::KeyW);
-    rocket.throttle = if thrusting && rocket.fuel > 0.0 { 1.0 } else { 0.0 };
 
-    tf.rotation = Quat::from_rotation_z(rocket.angle);
+    if rocket.landed {
+        // Thrust lifts off — physics takes over next frame
+        if thrusting && rocket.fuel > 0.0 {
+            rocket.landed = false;
+            rocket.throttle = 1.0;
+        }
+    } else {
+        rocket.throttle = if thrusting && rocket.fuel > 0.0 { 1.0 } else { 0.0 };
+    }
 }
 
 fn update_moon(time: Res<Time>, mut q: Query<(&mut Transform, &mut Moon)>) {
@@ -333,6 +354,19 @@ fn physics_step(
         return;
     };
     if rocket.crashed {
+        return;
+    }
+
+    // While landed on the moon, ride it — no independent physics
+    if rocket.landed && rocket.on_moon {
+        if let Ok((moon_tf, moon)) = moon_q.get_single() {
+            let moon_pos = moon_tf.translation.truncate();
+            tf.translation = (moon_pos + rocket.body_offset).extend(1.0);
+            rocket.velocity = moon.velocity;
+        }
+        return;
+    }
+    if rocket.landed {
         return;
     }
 
@@ -380,7 +414,7 @@ fn update_trajectory(rocket_q: Query<(&Transform, &Rocket)>, mut gizmos: Gizmos)
     let Ok((rtf, rocket)) = rocket_q.get_single() else {
         return;
     };
-    if rocket.crashed {
+    if rocket.crashed || rocket.landed {
         return;
     }
 
@@ -438,14 +472,59 @@ fn update_trajectory(rocket_q: Query<(&Transform, &Rocket)>, mut gizmos: Gizmos)
     gizmos.linestrip_2d(points, color);
 }
 
-fn check_crash(mut q: Query<(&Transform, &mut Rocket)>) {
-    let Ok((tf, mut rocket)) = q.get_single_mut() else {
+fn check_surface_contact(
+    mut rocket_q: Query<(&mut Transform, &mut Rocket), Without<Moon>>,
+    moon_q: Query<(&Transform, &Moon), Without<Rocket>>,
+) {
+    let Ok((mut rtf, mut rocket)) = rocket_q.get_single_mut() else {
         return;
     };
-    if !rocket.crashed && tf.translation.truncate().length() <= PLANET_RADIUS + 2.0 {
-        rocket.crashed = true;
-        rocket.velocity = Vec2::ZERO;
-        rocket.throttle = 0.0;
+    if rocket.crashed || rocket.landed {
+        return;
+    }
+
+    let pos = rtf.translation.truncate();
+
+    // ── Planet ─────────────────────────────────────────────────────────────
+    if pos.length() <= PLANET_RADIUS + 2.0 {
+        if rocket.velocity.length() <= LANDING_MAX_SPEED {
+            let normal = pos.normalize();
+            rocket.angle = (-normal.x).atan2(normal.y);
+            rocket.velocity = Vec2::ZERO;
+            rocket.throttle = 0.0;
+            rocket.landed = true;
+            rtf.translation = (normal * PLANET_RADIUS).extend(1.0);
+            rtf.rotation = Quat::from_rotation_z(rocket.angle);
+        } else {
+            rocket.crashed = true;
+            rocket.velocity = Vec2::ZERO;
+            rocket.throttle = 0.0;
+        }
+        return;
+    }
+
+    // ── Moon ───────────────────────────────────────────────────────────────
+    if let Ok((moon_tf, moon)) = moon_q.get_single() {
+        let moon_pos = moon_tf.translation.truncate();
+        let from_moon = pos - moon_pos;
+        if from_moon.length() <= MOON_RADIUS + 2.0 {
+            let relative_speed = (rocket.velocity - moon.velocity).length();
+            if relative_speed <= LANDING_MAX_SPEED {
+                let normal = from_moon.normalize();
+                rocket.angle = (-normal.x).atan2(normal.y);
+                rocket.velocity = moon.velocity;
+                rocket.throttle = 0.0;
+                rocket.landed = true;
+                rocket.on_moon = true;
+                rocket.body_offset = normal * MOON_RADIUS;
+                rtf.translation = (moon_pos + rocket.body_offset).extend(1.0);
+                rtf.rotation = Quat::from_rotation_z(rocket.angle);
+            } else {
+                rocket.crashed = true;
+                rocket.velocity = Vec2::ZERO;
+                rocket.throttle = 0.0;
+            }
+        }
     }
 }
 
@@ -546,6 +625,10 @@ fn update_hud(
     if let Ok(mut t) = status_q.get_single_mut() {
         *t = Text::new(if rocket.crashed {
             "CRASHED  –  press R to reset"
+        } else if rocket.landed && rocket.on_moon {
+            "LANDED ON MOON  –  SPACE to launch"
+        } else if rocket.landed {
+            "LANDED  –  SPACE to launch"
         } else if rocket.fuel <= 0.0 {
             "OUT OF FUEL"
         } else {
