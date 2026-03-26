@@ -130,19 +130,26 @@ fn main() {
 /// Stage 1 (bottom): large tank + high-thrust engine + decoupler.
 /// Stage 2 (top):    small tank + efficient engine.
 fn spawn_default_stages(commands: &mut Commands) -> (Entity, Entity) {
+    let fuel_tank_size = Vec2::new(18.0, 22.0);
+    let fuel_tank_sprite = Sprite {
+        color: Color::srgba(1.0, 1.0, 1.0, 1.0),
+        custom_size: Some(fuel_tank_size),
+        ..default()
+    };
+
     let stage1 = commands
-        .spawn(RocketStage)
+        .spawn((RocketStage, Transform::from_xyz(0., -10., 0.), Visibility::default()))
         .with_children(|p| {
-            p.spawn(FuelTank { fuel: 80.0, capacity: 80.0 });
+            p.spawn((fuel_tank_sprite.clone(), Transform::from_xyz(0., -24., 0.), FuelTank { fuel: 80.0, capacity: 80.0 }));
             p.spawn(Engine { thrust: 120.0 });
             p.spawn(Decoupler);
         })
         .id();
 
     let stage2 = commands
-        .spawn(RocketStage)
+        .spawn((RocketStage, Transform::default(), Visibility::default()))
         .with_children(|p| {
-            p.spawn(FuelTank { fuel: 40.0, capacity: 40.0 });
+            p.spawn((fuel_tank_sprite.clone(), Transform::from_xyz(0., -10., 0.), FuelTank { fuel: 40.0, capacity: 40.0 }));
             p.spawn(Engine { thrust: 80.0 });
         })
         .id();
@@ -157,8 +164,8 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
-    let r0 = PLANET_RADIUS + START_HEIGHT; // 280 – initial orbit radius
-    let orbital_v = (G * PLANET_MASS / r0).sqrt(); // ≈ 267 units/s
+    let r0 = PLANET_RADIUS; // + START_HEIGHT; // 280 – initial orbit radius
+    let orbital_v = 0.; //(G * PLANET_MASS / r0).sqrt(); // ≈ 267 units/s
 
     // Camera – start centered on the rocket
     commands.spawn((Camera2d, Transform::from_xyz(0., r0, 0.)));
@@ -219,9 +226,9 @@ fn setup(
     // Stages and exhaust flame are children of this entity.
     commands.spawn((
         Mesh2d(meshes.add(Triangle2d::new(
-            Vec2::new(0., 14.),   // nose
-            Vec2::new(-9., -12.), // left base
-            Vec2::new(9., -12.),  // right base
+            Vec2::new(0., 10.),   // nose
+            Vec2::new(-9., -9.), // left base
+            Vec2::new(9., -9.),  // right base
         ))),
         MeshMaterial2d(materials.add(Color::srgb(0.85, 0.85, 0.95))),
         Transform::from_xyz(0., r0, 1.0),
