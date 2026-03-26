@@ -1,490 +1,349 @@
-use std::collections::HashMap;
+use macroquad::{
+    color::colors,
+    input::{is_key_down, KeyCode},
+    math::Vec2 as MqVec2,
+    shapes::draw_circle_lines,
+    text::draw_text,
+    window::{clear_background, screen_height, screen_width},
+};
 
-use macroquad::color::colors;
-use macroquad::prelude::*;
+use crate::celestial::{CelestialBody, Orbit};
+use crate::physics::{Fixed, Vec2};
+use crate::spaceship::{Spaceship, ShipState};
 
-use crate::draw::{color, draw_game};
-use crate::insect::ant::{Ant, AntQueen};
-use crate::insect::centipede::Centipede;
-use crate::insect::pillbug::Pillbug;
-use crate::insect::player::InsectPlayer;
-use crate::insect::spider::Spider;
-use crate::insect::{Action, Event, Id, Insect, Interact};
-use crate::map::{FACTION_CENTIPEDE, FACTION_SPIDER, Faction, MAP_SIZE, Map};
-// use crate::grid::{DOWN, Grid, LEFT, RIGHT, SQUARES, UP};
-use crate::pos::{Pos, dirs};
-
-pub enum Speed {
-    SLOW,
-    FAST,
-}
-
-const SPEED_FAST: f64 = 0.1;
-const SPEED_SLOW: f64 = 0.25;
-
-impl Speed {
-    pub fn val(&self) -> f64 {
-        match self {
-            Speed::SLOW => SPEED_FAST,
-            Speed::FAST => SPEED_SLOW,
-        }
-    }
-
-    fn invert(&self) -> Speed {
-        match self {
-            Speed::SLOW => Speed::FAST,
-            Speed::FAST => Speed::SLOW,
-        }
-    }
-}
+const SCALE: f32 = 0.001; // Pixels per unit (fixed point)
+const TIME_STEP: f32 = 0.016; // ~60 FPS
 
 pub struct Game {
-    pub map: Map,
-
-    speed: Speed,
-    last_update: f64,
-    game_over: bool,
-    pub game_won: bool,
-    pub player_id: Id,
-    pub player_last_pos: Pos,
-    pub player_dir: Pos,
-    pub player_faction: Faction,
-    pub show_scents: Faction,
-    pub paused: bool,
-    // pub pillbugs: Vec<Pillbug>,
-    // pub spiders: Vec<Spider>,
-    pub insects: HashMap<Id, Insect>,
-    pub insects_id: Id,
-    pub pops: HashMap<Faction, usize>,
-    pub queens: HashMap<Faction, Id>,
+    spaceship: Spaceship,
+    planet: CelestialBody,
+    moon: CelestialBody,
+    time: Fixed,
 }
-
-const NEST_POS: Pos = Pos::new(MAP_SIZE - 20, MAP_SIZE - 10);
-const NEST_POS_2: Pos = Pos::new(20, 10);
-
-const STARTING_PILLBUGS: usize = 250;
-const STARTING_SPIDERS: usize = 50;
-const STARTING_ANTS: usize = 128;
-
-const FACTION_BLUE_ANTS: Faction = 1;
-const FACTION_RED_ANTS: Faction = 2;
 
 impl Game {
     pub fn new() -> Self {
-        let map = Map::new();
+        let earth_pos = Vec2::from_f64(400.0, 300.0);
+        let moon_pos = Vec2::from_f64(600.0, 300.0);
+        let moon_vel = Vec2::from_f64(0.0, 100.0); // Orbital velocity
 
-        Self {
-            // pillbugs: (0..STARTING_PILLBUGS)
-            //     .into_iter()
-            //     .map(|_| Pillbug::new(map.rand_pos()))
-            //     .collect(),
-            // spiders: (0..STARTING_SPIDERS)
-            //     .into_iter()
-            //     .map(|_| Spider::new(map.rand_pos()))
-            //     .collect(),
-            // player: Spider::new(map.rand_pos()),
-            insects: HashMap::new(),
-            insects_id: 1,
-            player_dir: dirs::NONE,
-            player_id: 0,
-            player_last_pos: dirs::NONE,
-            player_faction: FACTION_CENTIPEDE,
-            map,
-            speed: Speed::SLOW,
-            last_update: 0.,
-            game_over: false,
-            game_won: true,
-            show_scents: 0,
-            paused: false,
-            pops: HashMap::new(),
-            queens: HashMap::new(),
+        let mut ship = Spaceship::new(earth_pos + Vec2::from_f64(0.0, 100.0));
+        ship.state = ShipState::Landed;
+
+        Game {
+            spaceship: ship,
+            planet: CelestialBody::new(
+                earth_pos,
+                Vec2::zero(),
+                Fixed::from_f64(50.0),
+                Fixed::from_f64(10000.0),
+                "Earth",
+            ),
+            moon: CelestialBody::new(
+                moon_pos,
+                moon_vel,
+                Fixed::from_f64(20.0),
+                Fixed::from_f64(1000.0),
+                "Moon",
+            ),
+            time: Fixed::from_i32(0),
         }
     }
 
-    pub fn spawn_insect(&mut self, mut insect: Insect) -> Id {
-        let id = self.insects_id;
-        self.insects_id += 1;
-        insect.base.id = id;
-        let _ = self.map.occupy(insect.base.pos, (insect.base.faction, id));
-        self.insects.insert(id, insect);
-        // oofarinos
-        id
+    pub fn update(&mut self) {
+        let dt = Fixed::from_f64(TIME_STEP as f64);
+
+        // Handle input
+        self.handle_input(dt);
+
+        // Update space bodies
+        self.moon.update(dt, self.planet);
+
+        // Calculate total gravity at ship position
+        let gravity = self.planet.gravity_at(self.spaceship.position)
+            + self.moon.gravity_at(self.spaceship.position);
+
+        // Update ship
+        self.spaceship.update(gravity, dt);
+
+        // Check landing/collision
+        self.check_collision_and_landing();
+
+        // Update time
+        self.time = self.time + dt;
     }
 
-    pub fn spawn_ant_colony(&mut self, pos: Pos, faction: Faction) {
-        let queen = self.spawn_insect(AntQueen::new(pos, faction));
-        self.queens.insert(faction, queen);
-        for _ in 0..STARTING_ANTS {
-            self.spawn_insect(Ant::new(pos, faction, queen));
+    fn handle_input(&mut self, dt: Fixed) {
+        if is_key_down(KeyCode::Left) || is_key_down(KeyCode::A) {
+            self.spaceship.rotate_left(dt);
         }
-    }
-
-    pub fn generate(&mut self) {
-        for _ in 0..STARTING_PILLBUGS {
-            self.spawn_insect(Pillbug::new(self.map.rand_pos()));
-        }
-        for _ in 0..STARTING_SPIDERS {
-            self.spawn_insect(Spider::new(self.map.rand_pos()));
-        }
-        for _ in 0..10 {
-            self.spawn_insect(Centipede::new(self.map.rand_pos()));
-        }
-
-        self.spawn_ant_colony(NEST_POS, FACTION_BLUE_ANTS);
-        self.spawn_ant_colony(NEST_POS_2, FACTION_RED_ANTS);
-
-        self.spawn_player();
-        // self.player_id = self.spawn_insect(InsectPlayer::new(Spider::new(self.map.rand_pos())));
-    }
-
-    /// NOTE: will be run more than once per sim tick!! must handle this correctly
-    pub fn update_player_input(&mut self) {
-        let mut input_dir = dirs::NONE;
         if is_key_down(KeyCode::Right) || is_key_down(KeyCode::D) {
-            input_dir.x = 1;
-        } else if is_key_down(KeyCode::Left) || is_key_down(KeyCode::A) {
-            input_dir.x = -1;
+            self.spaceship.rotate_right(dt);
         }
         if is_key_down(KeyCode::Up) || is_key_down(KeyCode::W) {
-            input_dir.y = -1;
-        } else if is_key_down(KeyCode::Down) || is_key_down(KeyCode::S) {
-            input_dir.y = 1;
-        }
-        self.player_dir = input_dir;
-
-        // if is_key_down(KeyCode::LeftShift) {
-        //     self.player.food_scent = u8::MAX;
-        // } else {
-        //     self.player.food_scent = 0;
-        // }
-        // TODO
-
-        if is_key_pressed(KeyCode::Key1) {
-            if self.show_scents == 1 {
-                self.show_scents = 0;
-            } else {
-                self.show_scents = 1;
+            if self.spaceship.state == ShipState::Flying {
+                self.spaceship.apply_thrust(dt);
             }
         }
-        if is_key_pressed(KeyCode::Key2) {
-            if self.show_scents == 2 {
-                self.show_scents = 0;
-            } else {
-                self.show_scents = 2;
+        if is_key_down(KeyCode::Space) {
+            if self.spaceship.state == ShipState::Landed {
+                // Takeoff
+                self.spaceship.state = ShipState::Flying;
+                self.spaceship.velocity = Vec2::from_f64(0.0, -50.0); // Initial liftoff velocity
+                self.spaceship.fuel = self.spaceship.max_fuel;
             }
-        }
-
-        if is_key_pressed(KeyCode::Minus) {
-            self.map.camera.change_zoom(-0.1);
-        }
-        if is_key_pressed(KeyCode::Equal) {
-            self.map.camera.change_zoom(0.1);
-        }
-
-        if is_key_pressed(KeyCode::Space) {
-            self.paused = !self.paused;
-        }
-        if is_key_pressed(KeyCode::F) {
-            self.speed = self.speed.invert();
         }
     }
 
-    pub fn update_player(&mut self) -> Option<Event> {
-        if let Some(player) = self.insects.get_mut(&self.player_id) {
-            if is_key_down(KeyCode::X) {
-                //     self.player.reproduce = u8::MAX;
-                //     // self.player.insect.hunger = 550;
-                // } else {
-                //     self.player.reproduce = 0;
-                if let Some(action) = player.player_action(&mut self.map, Action::ActionA) {
-                    return Some(action);
-                }
-            }
-            self.player_last_pos = player.base.pos;
-            if self.player_dir != dirs::NONE {
-                return player.player_action(&mut self.map, Action::Move(self.player_dir));
+    fn check_collision_and_landing(&mut self) {
+        let to_planet = self.spaceship.position - self.planet.position;
+        let dist_to_planet = to_planet.magnitude();
+        let planet_surface = self.planet.radius + Fixed::from_f64(20.0); // Landing zone
+
+        if dist_to_planet <= planet_surface && self.spaceship.state == ShipState::Flying {
+            // Check if moving slowly enough to land
+            let speed = self.spaceship.velocity.magnitude();
+            if speed < Fixed::from_f64(50.0) {
+                self.spaceship.state = ShipState::Landed;
+                self.spaceship.position = self.planet.position
+                    + (to_planet.normalize() * self.planet.radius);
+                self.spaceship.velocity = Vec2::zero();
+                self.spaceship.angular_velocity = Fixed::from_i32(0);
+                self.spaceship.refuel(10); // Slowly refuel while landed
             }
         }
 
-        None
+        let to_moon = self.spaceship.position - self.moon.position;
+        let dist_to_moon = to_moon.magnitude();
+        let moon_surface = self.moon.radius + Fixed::from_f64(20.0);
 
-        // TODO
-        // if is_key_down(KeyCode::X) {
-        //     self.player.reproduce = u8::MAX;
-        //     // self.player.insect.hunger = 550;
-        // } else {
-        //     sel
-
-        // let colony = &mut self.ant_colonies[0];
-
-        // let scent = self.player.food_scent;
-
-        // let _seeking = self
-        //     .player
-        //     .update_behaviour(&mut self.map, &mut colony.food, 1);
-
-        // self.player.update_scents(&mut colony.scents);
-
-        // self.player.food_scent = scent;
-        // self.player.insect.hunger = u16::MAX;
-
-        // if self.player.insect.update(
-        //     Some(self.player.insect.pos + self.player.insect.dir),
-        //     &mut self.map,
-        //     self.ant_colonies[0].faction,
-        // ) == false
-        // {
-        //     // we dead, make new player
-        //     self.player = Ant::new(NEST_POS, 1);
-        // }
+        if dist_to_moon <= moon_surface && self.spaceship.state == ShipState::Flying {
+            let speed = self.spaceship.velocity.magnitude();
+            if speed < Fixed::from_f64(50.0) {
+                self.spaceship.state = ShipState::Landed;
+                self.spaceship.position =
+                    self.moon.position + (to_moon.normalize() * self.moon.radius);
+                self.spaceship.velocity = Vec2::zero();
+                self.spaceship.angular_velocity = Fixed::from_i32(0);
+            }
+        }
     }
 
-    pub fn update_sim(&mut self) {
-        let mut new_bugs: Vec<Box<Insect>> = Vec::new();
-        let mut dead_bugs: Vec<Id> = Vec::new();
-        let mut interacts: Vec<Interact> = Vec::new();
-        for pop in self.pops.values_mut() {
-            *pop = 0;
-        }
-
-        for (id, insect) in self.insects.iter_mut() {
-            *self.pops.entry(insect.base.faction).or_insert(0) += 1;
-            match insect.update(&mut self.map) {
-                Some(Event::Interact(pos)) => interacts.push(pos),
-                Some(Event::Rebirth(bug)) => {
-                    new_bugs.push(bug);
-                    dead_bugs.push(*id);
-                }
-                Some(Event::Birth(bug)) => new_bugs.push(bug),
-                Some(Event::Death()) => dead_bugs.push(*id),
-                None => {}
-            };
-        }
-
-        match self.update_player() {
-            Some(Event::Death()) => {
-                dead_bugs.push(self.player_id);
-                // creat new insect for the player
-                // TODO: not a spider???
-            }
-            Some(Event::Interact(pos)) => interacts.push(pos),
-            Some(Event::Rebirth(bug)) => {
-                // new_bugs.push(bug);
-                dead_bugs.push(self.player_id);
-                self.player_id = self.spawn_insect(*bug);
-            }
-            Some(Event::Birth(bug)) => new_bugs.push(bug),
-            // Some(Event::Death()) => dead_bugs.push(),
-            None => {}
-        }
-
-        while let Some(bug) = dead_bugs.pop() {
-            if let Some(insect) = self.insects.remove(&bug) {
-                insect.die(&mut self.map);
-            }
-            // could add on_death call here...
-        }
-
-        while let Some(bug) = new_bugs.pop() {
-            self.spawn_insect(*bug);
-        }
-
-        while let Some(interact) = interacts.pop() {
-            if let Some(insect) = self.insects.get_mut(&interact.dst) {
-                insect.interact(interact)
-            }
-        }
-
-        if !self.insects.contains_key(&self.player_id) {
-            self.spawn_player();
-        }
-
-        self.map.update();
-    }
-
-    pub fn update(&mut self, _won: u32, _lost: u32) -> bool {
-        self.update_player_input();
-        if !self.game_over {
-            if !self.paused && get_time() - self.last_update > self.speed.val() {
-                self.last_update = get_time();
-
-                self.update_sim();
-
-                // if all_snakes_dead {
-                //     self.game_won = true;
-                //     self.game_over = true;
-                // }
-
-                // self.update_player();
-            }
-        }
-
-        // let mut player_color = self.ants[0].body_color;
-        // player_color.r *= 0.5;
-        // player_color.g *= 0.5;
-        // player_color.b *= 0.5;
-
+    pub fn draw(&self) {
         clear_background(colors::BLACK);
 
-        self.map.update_size(self.player_last_pos);
-        draw_game(&self);
+        // Convert world coordinates to screen coordinates
+        let screen_center_x = screen_width() / 2.0;
+        let screen_center_y = screen_height() / 2.0;
 
-        let mut new_pops: Vec<(u8, usize)> =
-            self.pops.iter().map(|(key, val)| (*key, *val)).collect();
-        new_pops.sort_by(|a, b| b.1.cmp(&a.1)); // sort largest to smallest
+        // Draw planet
+        let planet_pos = self.planet.position.to_f64_tuple();
+        let planet_screen_x = screen_center_x + planet_pos.0 as f32 * SCALE;
+        let planet_screen_y = screen_center_y + planet_pos.1 as f32 * SCALE;
+        let planet_radius = self.planet.radius.to_f64() as f32 * SCALE;
 
-        let mut y: f32 = 20.;
-        for (faction, pop) in &new_pops {
-            let text = if let Some(queen) = self.queens.get(faction) {
-                format!(
-                    "{}: Pop: {} Food: {}",
-                    crate::draw::name(*faction),
-                    pop,
-                    self.insects[queen].base.hunger
-                )
-            } else {
-                format!("{}: {}", crate::draw::name(*faction), pop)
-            };
-            draw_text(text.as_str(), 10., y, 24., color(*faction));
-            y += 20.;
-        }
+        macroquad::shapes::draw_circle(planet_screen_x, planet_screen_y, planet_radius, colors::BLUE);
+        draw_circle_lines(
+            planet_screen_x,
+            planet_screen_y,
+            planet_radius,
+            2.0,
+            colors::DARKBLUE,
+        );
 
-        if let Some(player) = self.insects.get(&self.player_id) {
-            draw_text(
-                format!(
-                    "P Health: {}, Hunger: {}",
-                    player.base.health, player.base.hunger
-                )
-                .as_str(),
-                10.,
-                y,
-                24.,
-                colors::YELLOW,
+        // Draw moon
+        let moon_pos = self.moon.position.to_f64_tuple();
+        let moon_screen_x = screen_center_x + moon_pos.0 as f32 * SCALE;
+        let moon_screen_y = screen_center_y + moon_pos.1 as f32 * SCALE;
+        let moon_radius = self.moon.radius.to_f64() as f32 * SCALE;
+
+        macroquad::shapes::draw_circle(moon_screen_x, moon_screen_y, moon_radius, colors::GRAY);
+        draw_circle_lines(
+            moon_screen_x,
+            moon_screen_y,
+            moon_radius,
+            2.0,
+            colors::DARKGRAY,
+        );
+
+        // Draw ship orbit prediction
+        if self.spaceship.state == ShipState::Flying {
+            self.draw_orbit_prediction(
+                screen_center_x,
+                screen_center_y,
+                self.planet.position,
             );
         }
 
-        // if self.game_over {
-        //     // clear_background(BLACK);
-        //     let text = if self.game_won {
-        //         "Game Won! Press [enter] to play agin."
-        //     } else {
-        //         "Game Over. Press [enter] to play again."
-        //     };
-        //     let font_size = 30.;
-        //     let text_size = measure_text(text, None, font_size as _, 1.0);
+        // Draw spaceship
+        let ship_pos = self.spaceship.position.to_f64_tuple();
+        let ship_screen_x = screen_center_x + ship_pos.0 as f32 * SCALE;
+        let ship_screen_y = screen_center_y + ship_pos.1 as f32 * SCALE;
+        let ship_size = 8.0;
 
-        //     draw_text(
-        //         text,
-        //         screen_width() / 2. - text_size.width / 2.,
-        //         screen_height() / 2. + text_size.height / 2.,
-        //         font_size,
-        //         WHITE,
-        //     );
+        // Draw ship as rotated square
+        self.draw_ship(
+            ship_screen_x,
+            ship_screen_y,
+            self.spaceship.rotation.to_f64() as f32,
+            ship_size,
+        );
 
-        //     if is_key_down(KeyCode::Enter) {
-        //         // start new game
-        //         return true;
-        //     }
-        // }
-        false
+        // Draw HUD
+        self.draw_hud(screen_center_x, screen_center_y);
     }
 
-    fn spawn_player(&mut self) {
-        if let Some((id, _insect)) = self
-            .insects
+    fn draw_ship(&self, x: f32, y: f32, rotation: f32, size: f32) {
+        let cos_r = rotation.cos();
+        let sin_r = rotation.sin();
+
+        let corners = [
+            (-size, -size),
+            (size, -size),
+            (size, size),
+            (-size, size),
+        ];
+
+        let rotated: Vec<_> = corners
             .iter()
-            .find(|(_id, insect)| insect.base.faction == self.player_faction)
-        {
-            let id = *id;
-            let insect = self.insects.remove(&id).unwrap();
-            let new_insect = InsectPlayer::new(insect);
-            self.player_id = new_insect.base.id;
-            self.insects.insert(id, new_insect);
+            .map(|(cx, cy)| {
+                let rx = cx * cos_r - cy * sin_r;
+                let ry = cx * sin_r + cy * cos_r;
+                (x + rx, y + ry)
+            })
+            .collect();
+
+        // Draw filled square by drawing 4 triangles
+        let p0 = rotated[0];
+        let p1 = rotated[1];
+        let p2 = rotated[2];
+        let p3 = rotated[3];
+
+        // Draw two triangles to form a square
+        macroquad::shapes::draw_triangle(
+            MqVec2::new(p0.0, p0.1),
+            MqVec2::new(p1.0, p1.1),
+            MqVec2::new(p2.0, p2.1),
+            colors::WHITE,
+        );
+        macroquad::shapes::draw_triangle(
+            MqVec2::new(p0.0, p0.1),
+            MqVec2::new(p2.0, p2.1),
+            MqVec2::new(p3.0, p3.1),
+            colors::WHITE,
+        );
+
+        // Draw direction indicator (nose of the ship)
+        let nose_x = x + cos_r * size * 1.5;
+        let nose_y = y + sin_r * size * 1.5;
+        macroquad::shapes::draw_line(x, y, nose_x, nose_y, 2.0, colors::RED);
+    }
+
+    fn draw_orbit_prediction(&self, screen_cx: f32, screen_cy: f32, central_pos: Vec2) {
+        let orbit = match Orbit::from_state_vectors(
+            self.spaceship.position,
+            self.spaceship.velocity,
+            central_pos,
+            self.planet.mass,
+        ) {
+            Some(o) => o,
+            None => return,
+        };
+
+        // Draw periapsis and apoapsis markers
+        let periapsis_dist = orbit.periapsis.to_f64() as f32 * SCALE;
+        macroquad::shapes::draw_circle(
+            screen_cx,
+            screen_cy + periapsis_dist,
+            3.0,
+            colors::GREEN,
+        );
+
+        let apoapsis_dist = orbit.apoapsis.to_f64() as f32 * SCALE;
+        macroquad::shapes::draw_circle(
+            screen_cx,
+            screen_cy - apoapsis_dist,
+            3.0,
+            colors::RED,
+        );
+
+        // Draw predicted orbit path (simplified ellipse approximation)
+        let segments = 32;
+        for i in 0..segments {
+            let t1 = i as f64 / segments as f64 * 2.0 * std::f64::consts::PI;
+            let t2 = (i + 1) as f64 / segments as f64 * 2.0 * std::f64::consts::PI;
+
+            let pos1 = self.orbit_point(central_pos, &orbit, t1);
+            let pos2 = self.orbit_point(central_pos, &orbit, t2);
+
+            let p1 = (
+                screen_cx + pos1.0 as f32 * SCALE,
+                screen_cy + pos1.1 as f32 * SCALE,
+            );
+            let p2 = (
+                screen_cx + pos2.0 as f32 * SCALE,
+                screen_cy + pos2.1 as f32 * SCALE,
+            );
+
+            macroquad::shapes::draw_line(p1.0, p1.1, p2.0, p2.1, 1.0, colors::YELLOW);
         }
     }
-}
 
-// impl Display for Game {
-// fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-// write!(
-//     f,
-//     "Ant 0: Pop: {} \nAnt 1: Pop: {} \nPillbugs: {}\nSpiders: {}",
-//     self.ant_colonies[0].workers.len(),
-//     self.ant_colonies[1].workers.len(),
-//     self.pillbugs.len(),
-//     self.spiders.len()
-// )
-// writ("Ants[0]: {}", self.ant_colonies[0].workers.len())
-// write!("GAME")
-// }
-// }
+    fn orbit_point(&self, center: Vec2, orbit: &Orbit, nu: f64) -> (f64, f64) {
+        let r = orbit.semi_major_axis.to_f64()
+            * (1.0 - orbit.eccentricity.to_f64().powi(2))
+            / (1.0 + orbit.eccentricity.to_f64() * nu.cos());
+        let x = center.x.to_f64() + r * nu.cos();
+        let y = center.y.to_f64() + r * nu.sin();
+        (x, y)
+    }
 
-#[cfg(test)]
-mod game_tests {
-    // use super::*;
+    fn draw_hud(&self, _screen_cx: f32, _screen_cy: f32) {
+        let fuel_percent = (self.spaceship.fuel as f32 / self.spaceship.max_fuel as f32) * 100.0;
+        draw_text(
+            &format!(
+                "FUEL: {:.0}% ({}/{}L)",
+                fuel_percent, self.spaceship.fuel, self.spaceship.max_fuel
+            ),
+            10.0,
+            20.0,
+            20.0,
+            colors::WHITE,
+        );
 
-    // #[test]
-    // fn test_pops() {
-    //     let mut game: Game = Game::new();
+        let vel = self.spaceship.velocity.magnitude().to_f64();
+        draw_text(
+            &format!("VEL: {:.1} m/s", vel),
+            10.0,
+            45.0,
+            20.0,
+            colors::WHITE,
+        );
 
-    //     for _ in 0..4 {
-    //         for i in 0..4096 {
-    //             game.update_sim();
-    //             assert!(
-    //                 !game.pillbugs.is_empty(),
-    //                 "Pillbugs died out at gen {}\n{}",
-    //                 i,
-    //                 game
-    //             );
-    //             assert!(
-    //                 game.pillbugs.len() < 1024,
-    //                 "Pillbugs overpoped at gen {}\n{}",
-    //                 i,
-    //                 game
-    //             );
+        let state_str = match self.spaceship.state {
+            ShipState::Flying => "FLYING",
+            ShipState::Landed => "LANDED",
+        };
+        draw_text(
+            &format!("STATE: {}", state_str),
+            10.0,
+            70.0,
+            20.0,
+            colors::WHITE,
+        );
 
-    //             assert!(
-    //                 !game.spiders.is_empty(),
-    //                 "Spiders died out at gen {}\n{}",
-    //                 i,
-    //                 game
-    //             );
-    //             assert!(
-    //                 game.spiders.len() < 500,
-    //                 "Spiders overpoped at gen {}\n{}",
-    //                 i,
-    //                 game
-    //             );
+        draw_text(
+            &format!(
+                "POS: ({:.0}, {:.0})",
+                self.spaceship.position.x.to_f64(),
+                self.spaceship.position.y.to_f64()
+            ),
+            10.0,
+            95.0,
+            20.0,
+            colors::WHITE,
+        );
 
-    //             assert!(
-    //                 !game.ant_colonies[0].workers.is_empty(),
-    //                 "Ants[0] died out at gen {}\n{}",
-    //                 i,
-    //                 game
-    //             );
-    //             assert!(
-    //                 game.ant_colonies[0].workers.len() < 500,
-    //                 "Ants[0] overpoped at gen {}\n{}",
-    //                 i,
-    //                 game
-    //             );
-
-    //             assert!(
-    //                 !game.ant_colonies[1].workers.is_empty(),
-    //                 "Ants[1] died out at gen {}\n{}",
-    //                 i,
-    //                 game
-    //             );
-    //             assert!(
-    //                 game.ant_colonies[1].workers.len() < 500,
-    //                 "Ants[1] overpoped at gen {}\n{}",
-    //                 i,
-    //                 game
-    //             );
-    //         }
-
-    //         println!("{}", game);
-    //     }
-    //     assert!(false, "PASSED");
-    // }
+        draw_text("CONTROLS: Arrow Keys or WASD to rotate, UP/W for thrust, SPACE to launch", 10.0, screen_height() - 10.0, 16.0, colors::WHITE);
+    }
 }
