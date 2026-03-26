@@ -16,15 +16,15 @@ use rand::Rng;
 // ── Physics constants (tuned for fun, not SI realism) ─────────────────────────
 const G: f32 = 200.0;
 const PLANET_MASS: f32 = 1.0e5; // G·M = 2·10⁷
-const PLANET_RADIUS: f32 = 400.0;
-const THRUST: f32 = 150.0; // units/s² at full throttle
+const PLANET_RADIUS: f32 = 700.0;
+const THRUST: f32 = 100.0; // units/s² at full throttle
 const FUEL_RATE: f32 = 15.0; // fuel/s at full throttle
 const ROT_SPEED: f32 = 2.5; // rad/s
 const START_HEIGHT: f32 = 80.0; // above surface
 
 const MOON_MASS: f32 = 5e3; // G·M_moon = 1·10⁶
 const MOON_RADIUS: f32 = 35.0;
-const MOON_ORBIT: f32 = 880.0; // distance from planet center
+const MOON_ORBIT: f32 = 1500.0; // distance from planet center
 
 const LANDING_MAX_SPEED: f32 = 400.0; // max speed (or relative speed) for a safe landing
 
@@ -66,6 +66,11 @@ struct HudStatus;
 #[derive(Component)]
 struct HudFps;
 
+// ── Resources ─────────────────────────────────────────────────────────────────
+
+#[derive(Resource, Default)]
+struct MapView(bool);
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 fn main() {
@@ -80,6 +85,7 @@ fn main() {
             ..default()
         }))
         .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.08)))
+        .insert_resource(MapView::default())
         .add_systems(Startup, setup)
         .add_systems(
             Update,
@@ -289,10 +295,16 @@ fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
     mut q: Query<(&mut Transform, &mut Rocket)>,
+    mut map_view: ResMut<MapView>,
 ) {
     let Ok((mut tf, mut rocket)) = q.get_single_mut() else {
         return;
     };
+
+    // Map view toggle
+    if keys.just_pressed(KeyCode::KeyM) {
+        map_view.0 = !map_view.0;
+    }
 
     // Reset
     if keys.just_pressed(KeyCode::KeyR) {
@@ -583,6 +595,8 @@ fn update_exhaust(
 fn follow_camera(
     rocket_q: Query<&Transform, With<Rocket>>,
     mut cam_q: Query<&mut Transform, (With<Camera2d>, Without<Rocket>)>,
+    mut proj_q: Query<&mut OrthographicProjection, With<Camera2d>>,
+    map_view: Res<MapView>,
     time: Res<Time>,
 ) {
     let Ok(rtf) = rocket_q.get_single() else {
@@ -591,8 +605,16 @@ fn follow_camera(
     let Ok(mut ctf) = cam_q.get_single_mut() else {
         return;
     };
-    let target = Vec3::new(rtf.translation.x, rtf.translation.y, ctf.translation.z);
-    ctf.translation = ctf.translation.lerp(target, 6.0 * time.delta_secs());
+    let Ok(mut proj) = proj_q.get_single_mut() else {
+        return;
+    };
+
+    let dt = time.delta_secs();
+    let target_pos = Vec3::new(rtf.translation.x, rtf.translation.y, ctf.translation.z);
+    let target_scale = if map_view.0 { 10.0 } else { 1.0 };
+
+    ctf.translation = ctf.translation.lerp(target_pos, 6.0 * dt);
+    proj.scale += (target_scale - proj.scale) * (6.0 * dt).min(1.0);
 }
 
 fn update_hud(
