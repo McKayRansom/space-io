@@ -39,16 +39,16 @@ struct Rocket {
     throttle: f32,     // 0 or 1
     crashed: bool,
     landed: bool,
-    on_moon: bool,
-    body_offset: Vec2, // offset from landed body center (moon only)
+    landed_body: Option<Entity>, // which body we're on (None when flying)
+    body_offset: Vec2,           // surface-normal offset from that body's center
 }
 
 #[derive(Component)]
-struct Planet;
-
-#[derive(Component)]
-struct Moon {
+struct CelestialBody {
+    mass: f32,
+    radius: f32,
     velocity: Vec2,
+    fixed: bool, // if true, unaffected by gravity (e.g. the central planet)
 }
 
 #[derive(Component)]
@@ -85,7 +85,7 @@ fn main() {
             Update,
             (
                 handle_input,
-                update_moon,
+                update_bodies,
                 physics_step,
                 check_surface_contact,
                 update_trajectory,
@@ -131,10 +131,15 @@ fn setup(
         Mesh2d(meshes.add(Circle::new(PLANET_RADIUS))),
         MeshMaterial2d(materials.add(Color::srgb(0.15, 0.50, 0.22))),
         Transform::default(),
-        Planet,
+        CelestialBody {
+            mass: PLANET_MASS,
+            radius: PLANET_RADIUS,
+            velocity: Vec2::ZERO,
+            fixed: true,
+        },
     ));
 
-    // Atmosphere glow ring
+    // Atmosphere glow ring (visual only, no physics)
     commands.spawn((
         Mesh2d(meshes.add(Annulus::new(PLANET_RADIUS + 1.0, PLANET_RADIUS + 40.0))),
         MeshMaterial2d(materials.add(Color::srgba(0.4, 0.7, 1.0, 0.10))),
@@ -147,8 +152,11 @@ fn setup(
         Mesh2d(meshes.add(Circle::new(MOON_RADIUS))),
         MeshMaterial2d(materials.add(Color::srgb(0.62, 0.62, 0.68))),
         Transform::from_xyz(MOON_ORBIT, 0., 0.2),
-        Moon {
-            velocity: Vec2::new(0., -moon_orbital_v), // CW orbit starting at +X
+        CelestialBody {
+            mass: MOON_MASS,
+            radius: MOON_RADIUS,
+            velocity: Vec2::new(0., -moon_orbital_v),
+            fixed: false,
         },
     ));
 
@@ -181,7 +189,7 @@ fn setup(
             throttle: 0.0,
             crashed: false,
             landed: false,
-            on_moon: false,
+            landed_body: None,
             body_offset: Vec2::ZERO,
         },
     ));
@@ -297,7 +305,7 @@ fn handle_input(
         rocket.throttle = 0.0;
         rocket.crashed = false;
         rocket.landed = false;
-        rocket.on_moon = false;
+        rocket.landed_body = None;
         rocket.body_offset = Vec2::ZERO;
         return;
     }
@@ -332,67 +340,84 @@ fn handle_input(
     }
 }
 
-fn update_moon(time: Res<Time>, mut q: Query<(&mut Transform, &mut Moon)>) {
-    let Ok((mut tf, mut moon)) = q.get_single_mut() else {
-        return;
-    };
+fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mut CelestialBody)>) {
     let dt = time.delta_secs();
-    let pos = tf.translation.truncate();
-    let r = pos.length().max(1.0);
-    moon.velocity -= pos.normalize() * (G * PLANET_MASS / (r * r)) * dt;
-    let v = moon.velocity;
-    tf.translation.x += v.x * dt;
-    tf.translation.y += v.y * dt;
+
+    // Snapshot positions/masses so we can borrow mutably below
+    let states: Vec<(Entity, Vec2, f32)> = bodies
+        .iter()
+        .map(|(e, tf, b)| (e, tf.translation.truncate(), b.mass))
+        .collect();
+
+    for (entity, mut tf, mut body) in bodies.iter_mut() {
+        if body.fixed {
+            continue;
+        }
+        let pos = tf.translation.truncate();
+        let mut accel = Vec2::ZERO;
+        for &(other_entity, other_pos, other_mass) in &states {
+            if other_entity == entity {
+                continue;
+            }
+            let to_other = other_pos - pos;
+            let dist_sq = to_other.length_squared();
+            if dist_sq < 1.0 {
+                continue;
+            }
+            let dist = dist_sq.sqrt();
+            accel += (to_other / dist) * (G * other_mass / dist_sq);
+        }
+        body.velocity += accel * dt;
+        let v = body.velocity;
+        tf.translation.x += v.x * dt;
+        tf.translation.y += v.y * dt;
+    }
 }
 
 fn physics_step(
     time: Res<Time>,
-    moon_q: Query<(&Transform, &Moon), Without<Rocket>>,
-    mut q: Query<(&mut Transform, &mut Rocket), Without<Moon>>,
+    bodies: Query<(Entity, &Transform, &CelestialBody)>,
+    mut rocket_q: Query<(&mut Transform, &mut Rocket), Without<CelestialBody>>,
 ) {
-    let Ok((mut tf, mut rocket)) = q.get_single_mut() else {
+    let Ok((mut tf, mut rocket)) = rocket_q.get_single_mut() else {
         return;
     };
     if rocket.crashed {
         return;
     }
 
-    // While landed on the moon, ride it — no independent physics
-    if rocket.landed && rocket.on_moon {
-        if let Ok((moon_tf, moon)) = moon_q.get_single() {
-            let moon_pos = moon_tf.translation.truncate();
-            tf.translation = (moon_pos + rocket.body_offset).extend(1.0);
-            rocket.velocity = moon.velocity;
-        }
-        return;
-    }
+    // While landed, ride the body we're on (fixed bodies keep us stationary)
     if rocket.landed {
+        if let Some(e) = rocket.landed_body {
+            if let Ok((_, body_tf, body)) = bodies.get(e) {
+                tf.translation = (body_tf.translation.truncate() + rocket.body_offset).extend(1.0);
+                rocket.velocity = body.velocity;
+            }
+        }
         return;
     }
 
     let dt = time.delta_secs();
     let pos = tf.translation.truncate();
 
-    // Planet gravity
-    let r = pos.length().max(1.0);
-    let grav = -pos.normalize() * (G * PLANET_MASS / (r * r));
-    rocket.velocity += grav * dt;
-
-    // Moon gravity
-    if let Ok((moon_tf, _)) = moon_q.get_single() {
-        let to_moon = moon_tf.translation.truncate() - pos;
-        let moon_dist = to_moon.length().max(1.0);
-        rocket.velocity += to_moon.normalize() * (G * MOON_MASS / (moon_dist * moon_dist)) * dt;
+    // Gravity from every celestial body
+    for (_, body_tf, body) in bodies.iter() {
+        let to_body = body_tf.translation.truncate() - pos;
+        let dist_sq = to_body.length_squared();
+        if dist_sq < 1.0 {
+            continue;
+        }
+        let dist = dist_sq.sqrt();
+        rocket.velocity += (to_body / dist) * (G * body.mass / dist_sq) * dt;
     }
 
-    // Thrust: nose direction when angle=0 is +Y
+    // Thrust
     if rocket.throttle > 0.0 && rocket.fuel > 0.0 {
         let nose = Vec2::new(-rocket.angle.sin(), rocket.angle.cos());
         rocket.velocity += nose * THRUST * dt;
         rocket.fuel = (rocket.fuel - FUEL_RATE * dt).max(0.0);
     }
 
-    // Euler position integration
     let v = rocket.velocity;
     tf.translation.x += v.x * dt;
     tf.translation.y += v.y * dt;
@@ -410,7 +435,11 @@ fn update_fps(diagnostics: Res<DiagnosticsStore>, mut q: Query<&mut Text, With<H
     }
 }
 
-fn update_trajectory(rocket_q: Query<(&Transform, &Rocket)>, mut gizmos: Gizmos) {
+fn update_trajectory(
+    rocket_q: Query<(&Transform, &Rocket)>,
+    bodies: Query<(&Transform, &CelestialBody)>,
+    mut gizmos: Gizmos,
+) {
     let Ok((rtf, rocket)) = rocket_q.get_single() else {
         return;
     };
@@ -418,8 +447,16 @@ fn update_trajectory(rocket_q: Query<(&Transform, &Rocket)>, mut gizmos: Gizmos)
         return;
     }
 
-    let mu = G * PLANET_MASS;
-    let pos = rtf.translation.truncate();
+    // Use the most massive fixed body as the orbital focus
+    let Some((focus, mu)) = bodies
+        .iter()
+        .filter(|(_, b)| b.fixed)
+        .max_by(|(_, a), (_, b)| a.mass.partial_cmp(&b.mass).unwrap())
+        .map(|(tf, b)| (tf.translation.truncate(), G * b.mass))
+    else {
+        return;
+    };
+    let pos = rtf.translation.truncate() - focus; // position relative to orbital focus
     let vel = rocket.velocity;
     let r = pos.length().max(1.0);
 
@@ -465,7 +502,7 @@ fn update_trajectory(rocket_q: Query<(&Transform, &Rocket)>, mut gizmos: Gizmos)
     let points: Vec<Vec2> = (0..=SEGMENTS)
         .map(|i| {
             let theta = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-            center + rot.rotate(Vec2::new(a * theta.cos(), b * theta.sin()))
+            focus + center + rot.rotate(Vec2::new(a * theta.cos(), b * theta.sin()))
         })
         .collect();
 
@@ -473,8 +510,8 @@ fn update_trajectory(rocket_q: Query<(&Transform, &Rocket)>, mut gizmos: Gizmos)
 }
 
 fn check_surface_contact(
-    mut rocket_q: Query<(&mut Transform, &mut Rocket), Without<Moon>>,
-    moon_q: Query<(&Transform, &Moon), Without<Rocket>>,
+    mut rocket_q: Query<(&mut Transform, &mut Rocket), Without<CelestialBody>>,
+    bodies: Query<(Entity, &Transform, &CelestialBody)>,
 ) {
     let Ok((mut rtf, mut rocket)) = rocket_q.get_single_mut() else {
         return;
@@ -485,46 +522,30 @@ fn check_surface_contact(
 
     let pos = rtf.translation.truncate();
 
-    // ── Planet ─────────────────────────────────────────────────────────────
-    if pos.length() <= PLANET_RADIUS + 2.0 {
-        if rocket.velocity.length() <= LANDING_MAX_SPEED {
-            let normal = pos.normalize();
+    for (entity, body_tf, body) in bodies.iter() {
+        let body_pos = body_tf.translation.truncate();
+        let from_body = pos - body_pos;
+        if from_body.length() > body.radius + 2.0 {
+            continue;
+        }
+
+        let rel_speed = (rocket.velocity - body.velocity).length();
+        if rel_speed <= LANDING_MAX_SPEED {
+            let normal = from_body.normalize();
             rocket.angle = (-normal.x).atan2(normal.y);
-            rocket.velocity = Vec2::ZERO;
+            rocket.velocity = body.velocity;
             rocket.throttle = 0.0;
             rocket.landed = true;
-            rtf.translation = (normal * PLANET_RADIUS).extend(1.0);
+            rocket.landed_body = Some(entity);
+            rocket.body_offset = normal * body.radius;
+            rtf.translation = (body_pos + rocket.body_offset).extend(1.0);
             rtf.rotation = Quat::from_rotation_z(rocket.angle);
         } else {
             rocket.crashed = true;
             rocket.velocity = Vec2::ZERO;
             rocket.throttle = 0.0;
         }
-        return;
-    }
-
-    // ── Moon ───────────────────────────────────────────────────────────────
-    if let Ok((moon_tf, moon)) = moon_q.get_single() {
-        let moon_pos = moon_tf.translation.truncate();
-        let from_moon = pos - moon_pos;
-        if from_moon.length() <= MOON_RADIUS + 2.0 {
-            let relative_speed = (rocket.velocity - moon.velocity).length();
-            if relative_speed <= LANDING_MAX_SPEED {
-                let normal = from_moon.normalize();
-                rocket.angle = (-normal.x).atan2(normal.y);
-                rocket.velocity = moon.velocity;
-                rocket.throttle = 0.0;
-                rocket.landed = true;
-                rocket.on_moon = true;
-                rocket.body_offset = normal * MOON_RADIUS;
-                rtf.translation = (moon_pos + rocket.body_offset).extend(1.0);
-                rtf.rotation = Quat::from_rotation_z(rocket.angle);
-            } else {
-                rocket.crashed = true;
-                rocket.velocity = Vec2::ZERO;
-                rocket.throttle = 0.0;
-            }
-        }
+        break; // only one contact at a time
     }
 }
 
@@ -624,15 +645,13 @@ fn update_hud(
     }
     if let Ok(mut t) = status_q.get_single_mut() {
         *t = Text::new(if rocket.crashed {
-            "CRASHED  –  press R to reset"
-        } else if rocket.landed && rocket.on_moon {
-            "LANDED ON MOON  –  SPACE to launch"
+            "CRASHED  –  press R to reset".to_string()
         } else if rocket.landed {
-            "LANDED  –  SPACE to launch"
+            "LANDED  –  SPACE to launch".to_string()
         } else if rocket.fuel <= 0.0 {
-            "OUT OF FUEL"
+            "OUT OF FUEL".to_string()
         } else {
-            ""
+            String::new()
         });
     }
 }
