@@ -16,11 +16,15 @@ use rand::Rng;
 // ── Physics constants (tuned for fun, not SI realism) ─────────────────────────
 const G: f32 = 200.0;
 const PLANET_MASS: f32 = 1.0e5; // G·M = 2·10⁷
-const PLANET_RADIUS: f32 = 200.0;
+const PLANET_RADIUS: f32 = 400.0;
 const THRUST: f32 = 100.0; // units/s² at full throttle
 const FUEL_RATE: f32 = 15.0; // fuel/s at full throttle
 const ROT_SPEED: f32 = 2.5; // rad/s
 const START_HEIGHT: f32 = 80.0; // above surface
+
+const MOON_MASS: f32 = 5e3; // G·M_moon = 1·10⁶
+const MOON_RADIUS: f32 = 35.0;
+const MOON_ORBIT: f32 = 880.0; // distance from planet center
 
 
 // ── Components ────────────────────────────────────────────────────────────────
@@ -36,6 +40,11 @@ struct Rocket {
 
 #[derive(Component)]
 struct Planet;
+
+#[derive(Component)]
+struct Moon {
+    velocity: Vec2,
+}
 
 #[derive(Component)]
 struct Exhaust;
@@ -71,6 +80,7 @@ fn main() {
             Update,
             (
                 handle_input,
+                update_moon,
                 physics_step,
                 check_crash,
                 update_trajectory,
@@ -124,6 +134,17 @@ fn setup(
         Mesh2d(meshes.add(Annulus::new(PLANET_RADIUS + 1.0, PLANET_RADIUS + 40.0))),
         MeshMaterial2d(materials.add(Color::srgba(0.4, 0.7, 1.0, 0.10))),
         Transform::from_xyz(0., 0., 0.05),
+    ));
+
+    // ── Moon ───────────────────────────────────────────────────────────────
+    let moon_orbital_v = (G * PLANET_MASS / MOON_ORBIT).sqrt();
+    commands.spawn((
+        Mesh2d(meshes.add(Circle::new(MOON_RADIUS))),
+        MeshMaterial2d(materials.add(Color::srgb(0.62, 0.62, 0.68))),
+        Transform::from_xyz(MOON_ORBIT, 0., 0.2),
+        Moon {
+            velocity: Vec2::new(0., moon_orbital_v), // CCW orbit starting at +X
+        },
     ));
 
     // ── Rocket ─────────────────────────────────────────────────────────────
@@ -290,7 +311,24 @@ fn handle_input(
     tf.rotation = Quat::from_rotation_z(rocket.angle);
 }
 
-fn physics_step(time: Res<Time>, mut q: Query<(&mut Transform, &mut Rocket)>) {
+fn update_moon(time: Res<Time>, mut q: Query<(&mut Transform, &mut Moon)>) {
+    let Ok((mut tf, mut moon)) = q.get_single_mut() else {
+        return;
+    };
+    let dt = time.delta_secs();
+    let pos = tf.translation.truncate();
+    let r = pos.length().max(1.0);
+    moon.velocity -= pos.normalize() * (G * PLANET_MASS / (r * r)) * dt;
+    let v = moon.velocity;
+    tf.translation.x += v.x * dt;
+    tf.translation.y += v.y * dt;
+}
+
+fn physics_step(
+    time: Res<Time>,
+    moon_q: Query<(&Transform, &Moon), Without<Rocket>>,
+    mut q: Query<(&mut Transform, &mut Rocket), Without<Moon>>,
+) {
     let Ok((mut tf, mut rocket)) = q.get_single_mut() else {
         return;
     };
@@ -301,10 +339,17 @@ fn physics_step(time: Res<Time>, mut q: Query<(&mut Transform, &mut Rocket)>) {
     let dt = time.delta_secs();
     let pos = tf.translation.truncate();
 
-    // Gravity: a = −G·M/r² · r̂  (toward planet center at origin)
+    // Planet gravity
     let r = pos.length().max(1.0);
     let grav = -pos.normalize() * (G * PLANET_MASS / (r * r));
     rocket.velocity += grav * dt;
+
+    // Moon gravity
+    if let Ok((moon_tf, _)) = moon_q.get_single() {
+        let to_moon = moon_tf.translation.truncate() - pos;
+        let moon_dist = to_moon.length().max(1.0);
+        rocket.velocity += to_moon.normalize() * (G * MOON_MASS / (moon_dist * moon_dist)) * dt;
+    }
 
     // Thrust: nose direction when angle=0 is +Y
     if rocket.throttle > 0.0 && rocket.fuel > 0.0 {
