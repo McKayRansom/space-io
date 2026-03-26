@@ -1,0 +1,3 @@
+[submodule "quad-lib"]
+	path = quad-lib
+	url = git@github.com:McKayRansom/quad-lib.git
