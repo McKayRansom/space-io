@@ -17,8 +17,7 @@ use rand::Rng;
 const G: f32 = 200.0;
 const PLANET_MASS: f32 = 1.0e5; // G·M = 2·10⁷
 const PLANET_RADIUS: f32 = 700.0;
-const THRUST: f32 = 100.0; // units/s² at full throttle
-const FUEL_RATE: f32 = 15.0; // fuel/s at full throttle
+const FUEL_RATE: f32 = 15.0; // fuel/s at full throttle (per tank)
 const ROT_SPEED: f32 = 2.5; // rad/s
 const START_HEIGHT: f32 = 80.0; // above surface
 
@@ -34,13 +33,14 @@ const LANDING_MAX_SPEED: f32 = 400.0; // max speed (or relative speed) for a saf
 #[derive(Component)]
 struct Rocket {
     velocity: Vec2,
-    angle: f32,        // radians; 0 = nose pointing +Y
-    fuel: f32,
-    throttle: f32,     // 0 or 1
+    angle: f32,          // radians; 0 = nose pointing +Y
+    throttle: f32,       // 0 or 1
     crashed: bool,
     landed: bool,
     landed_body: Option<Entity>, // which body we're on (None when flying)
     body_offset: Vec2,           // surface-normal offset from that body's center
+    active_stage: Option<Entity>, // currently burning stage
+    stage_queue: Vec<Entity>,     // remaining stages, front = next to activate
 }
 
 #[derive(Component)]
@@ -53,6 +53,25 @@ struct CelestialBody {
 
 #[derive(Component)]
 struct Exhaust;
+
+// ── Stage components ───────────────────────────────────────────────────────────
+
+#[derive(Component)]
+struct RocketStage;
+
+#[derive(Component)]
+struct FuelTank {
+    fuel: f32,
+    capacity: f32,
+}
+
+#[derive(Component)]
+struct Engine {
+    thrust: f32, // units/s²
+}
+
+#[derive(Component)]
+struct Decoupler; // marks a stage as separable from the one above
 
 // HUD marker components (each unique so queries are unambiguous)
 #[derive(Component)]
@@ -103,6 +122,32 @@ fn main() {
                 .chain(),
         )
         .run();
+}
+
+// ── Helpers ───────────────────────────────────────────────────────────────────
+
+/// Spawn two default stages and return (stage1_entity, stage2_entity).
+/// Stage 1 (bottom): large tank + high-thrust engine + decoupler.
+/// Stage 2 (top):    small tank + efficient engine.
+fn spawn_default_stages(commands: &mut Commands) -> (Entity, Entity) {
+    let stage1 = commands
+        .spawn(RocketStage)
+        .with_children(|p| {
+            p.spawn(FuelTank { fuel: 80.0, capacity: 80.0 });
+            p.spawn(Engine { thrust: 120.0 });
+            p.spawn(Decoupler);
+        })
+        .id();
+
+    let stage2 = commands
+        .spawn(RocketStage)
+        .with_children(|p| {
+            p.spawn(FuelTank { fuel: 40.0, capacity: 40.0 });
+            p.spawn(Engine { thrust: 80.0 });
+        })
+        .id();
+
+    (stage1, stage2)
 }
 
 // ── Setup ─────────────────────────────────────────────────────────────────────
@@ -168,37 +213,43 @@ fn setup(
 
     // ── Rocket ─────────────────────────────────────────────────────────────
 
-    // Exhaust flame – starts invisible, positioned behind rocket
-    commands.spawn((
-        Sprite {
-            color: Color::srgba(1.0, 0.55, 0.05, 0.0),
-            custom_size: Some(Vec2::new(7.0, 22.0)),
-            ..default()
-        },
-        Transform::from_xyz(0., r0, 0.9),
-        Exhaust,
-    ));
+    let (stage1, stage2) = spawn_default_stages(&mut commands);
 
     // Rocket body (triangle; nose = top when angle == 0)
+    // Stages and exhaust flame are children of this entity.
     commands.spawn((
         Mesh2d(meshes.add(Triangle2d::new(
-            Vec2::new(0., 16.),   // nose
-            Vec2::new(-9., -14.), // left base
-            Vec2::new(9., -14.),  // right base
+            Vec2::new(0., 14.),   // nose
+            Vec2::new(-9., -12.), // left base
+            Vec2::new(9., -12.),  // right base
         ))),
         MeshMaterial2d(materials.add(Color::srgb(0.85, 0.85, 0.95))),
         Transform::from_xyz(0., r0, 1.0),
         Rocket {
             velocity: Vec2::new(orbital_v, 0.),
             angle: 0.0,
-            fuel: 100.0,
             throttle: 0.0,
             crashed: false,
             landed: false,
             landed_body: None,
             body_offset: Vec2::ZERO,
+            active_stage: Some(stage1),
+            stage_queue: vec![stage2],
         },
-    ));
+    ))
+    .add_child(stage1)
+    .add_child(stage2)
+    .with_children(|parent| {
+        parent.spawn((
+            Sprite {
+                color: Color::srgba(1.0, 0.55, 0.05, 0.0),
+                custom_size: Some(Vec2::new(7.0, 22.0)),
+                ..default()
+            },
+            Transform::from_xyz(0., -24., -0.1),
+            Exhaust,
+        ));
+    });
 
     // ── HUD ────────────────────────────────────────────────────────────────
     let mono = TextFont {
@@ -274,7 +325,7 @@ fn setup(
     ));
     // Controls hint (bottom-left)
     commands.spawn((
-        Text::new("A/D: rotate     SPACE / ↑: thrust     R: reset"),
+        Text::new("A/D: rotate     W/↑: thrust     SPACE: stage     M: map     R: reset"),
         TextFont {
             font_size: 13.0,
             ..default()
@@ -294,10 +345,11 @@ fn setup(
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     time: Res<Time>,
-    mut q: Query<(&mut Transform, &mut Rocket)>,
+    mut commands: Commands,
+    mut q: Query<(Entity, &mut Transform, &mut Rocket)>,
     mut map_view: ResMut<MapView>,
 ) {
-    let Ok((mut tf, mut rocket)) = q.get_single_mut() else {
+    let Ok((rocket_entity, mut tf, mut rocket)) = q.get_single_mut() else {
         return;
     };
 
@@ -306,23 +358,46 @@ fn handle_input(
         map_view.0 = !map_view.0;
     }
 
-    // Reset
+    // Reset — despawn current stages and respawn fresh ones
     if keys.just_pressed(KeyCode::KeyR) {
+        if let Some(s) = rocket.active_stage {
+            commands.entity(s).despawn_recursive();
+        }
+        for &s in &rocket.stage_queue {
+            commands.entity(s).despawn_recursive();
+        }
+        let (stage1, stage2) = spawn_default_stages(&mut commands);
+        commands.entity(rocket_entity).add_child(stage1).add_child(stage2);
+
         let r0 = PLANET_RADIUS + START_HEIGHT;
         let ov = (G * PLANET_MASS / r0).sqrt();
         *tf = Transform::from_xyz(0., r0, 1.0);
         rocket.velocity = Vec2::new(ov, 0.);
         rocket.angle = 0.0;
-        rocket.fuel = 100.0;
         rocket.throttle = 0.0;
         rocket.crashed = false;
         rocket.landed = false;
         rocket.landed_body = None;
         rocket.body_offset = Vec2::ZERO;
+        rocket.active_stage = Some(stage1);
+        rocket.stage_queue = vec![stage2];
         return;
     }
 
     if rocket.crashed {
+        return;
+    }
+
+    // Stage separation — despawn the active stage and promote the next one
+    if keys.just_pressed(KeyCode::Space) {
+        if let Some(current) = rocket.active_stage {
+            commands.entity(current).despawn_recursive();
+        }
+        rocket.active_stage = if !rocket.stage_queue.is_empty() {
+            Some(rocket.stage_queue.remove(0))
+        } else {
+            None
+        };
         return;
     }
 
@@ -337,18 +412,15 @@ fn handle_input(
     }
     tf.rotation = Quat::from_rotation_z(rocket.angle);
 
-    let thrusting = keys.pressed(KeyCode::Space)
-        || keys.pressed(KeyCode::ArrowUp)
-        || keys.pressed(KeyCode::KeyW);
+    let thrusting = keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW);
 
     if rocket.landed {
-        // Thrust lifts off — physics takes over next frame
-        if thrusting && rocket.fuel > 0.0 {
+        if thrusting {
             rocket.landed = false;
             rocket.throttle = 1.0;
         }
     } else {
-        rocket.throttle = if thrusting && rocket.fuel > 0.0 { 1.0 } else { 0.0 };
+        rocket.throttle = if thrusting { 1.0 } else { 0.0 };
     }
 }
 
@@ -390,6 +462,9 @@ fn physics_step(
     time: Res<Time>,
     bodies: Query<(Entity, &Transform, &CelestialBody)>,
     mut rocket_q: Query<(&mut Transform, &mut Rocket), Without<CelestialBody>>,
+    stage_q: Query<&Children, With<RocketStage>>,
+    engine_q: Query<&Engine>,
+    mut tank_q: Query<&mut FuelTank>,
 ) {
     let Ok((mut tf, mut rocket)) = rocket_q.get_single_mut() else {
         return;
@@ -423,11 +498,39 @@ fn physics_step(
         rocket.velocity += (to_body / dist) * (G * body.mass / dist_sq) * dt;
     }
 
-    // Thrust
-    if rocket.throttle > 0.0 && rocket.fuel > 0.0 {
-        let nose = Vec2::new(-rocket.angle.sin(), rocket.angle.cos());
-        rocket.velocity += nose * THRUST * dt;
-        rocket.fuel = (rocket.fuel - FUEL_RATE * dt).max(0.0);
+    // Thrust — read engine thrust and consume fuel from the active stage's children
+    if rocket.throttle > 0.0 {
+        if let Some(stage_entity) = rocket.active_stage {
+            let children: Vec<Entity> = stage_q
+                .get(stage_entity)
+                .map(|c| c.iter().copied().collect())
+                .unwrap_or_default();
+
+            let total_thrust: f32 = children
+                .iter()
+                .filter_map(|&c| engine_q.get(c).ok())
+                .map(|e| e.thrust)
+                .sum();
+
+            // Collect total fuel (immutable borrows released after sum())
+            let total_fuel: f32 = children
+                .iter()
+                .filter_map(|&c| tank_q.get(c).ok())
+                .map(|t| t.fuel)
+                .sum();
+
+            if total_thrust > 0.0 && total_fuel > 0.0 {
+                let nose = Vec2::new(-rocket.angle.sin(), rocket.angle.cos());
+                rocket.velocity += nose * total_thrust * dt;
+
+                // Drain each tank equally
+                for &child in &children {
+                    if let Ok(mut tank) = tank_q.get_mut(child) {
+                        tank.fuel = (tank.fuel - FUEL_RATE * dt).max(0.0);
+                    }
+                }
+            }
+        }
     }
 
     let v = rocket.velocity;
@@ -568,27 +671,28 @@ fn check_surface_contact(
 }
 
 fn update_exhaust(
-    rocket_q: Query<(&Transform, &Rocket)>,
-    mut exhaust_q: Query<(&mut Transform, &mut Sprite), (With<Exhaust>, Without<Rocket>)>,
+    rocket_q: Query<&Rocket>,
+    stage_q: Query<&Children, With<RocketStage>>,
+    tank_q: Query<&FuelTank>,
+    mut exhaust_q: Query<&mut Sprite, With<Exhaust>>,
 ) {
-    let Ok((rtf, rocket)) = rocket_q.get_single() else {
+    let Ok(rocket) = rocket_q.get_single() else {
         return;
     };
-    let Ok((mut etf, mut esp)) = exhaust_q.get_single_mut() else {
+    let Ok(mut esp) = exhaust_q.get_single_mut() else {
         return;
     };
 
-    // Tail direction = opposite of nose
-    let tail_dir = Vec2::new(rocket.angle.sin(), -rocket.angle.cos());
-    let epos = rtf.translation.truncate() + tail_dir * 24.0;
-    etf.translation = epos.extend(0.9);
-    etf.rotation = rtf.rotation;
+    let has_fuel = rocket.active_stage
+        .and_then(|se| stage_q.get(se).ok())
+        .map(|children| {
+            children
+                .iter()
+                .any(|&c| tank_q.get(c).map(|t| t.fuel > 0.0).unwrap_or(false))
+        })
+        .unwrap_or(false);
 
-    let alpha = if rocket.throttle > 0.0 && rocket.fuel > 0.0 {
-        0.9
-    } else {
-        0.0
-    };
+    let alpha = if rocket.throttle > 0.0 && has_fuel { 0.9 } else { 0.0 };
     esp.color = Color::srgba(1.0, 0.55, 0.05, alpha);
 }
 
@@ -619,6 +723,8 @@ fn follow_camera(
 
 fn update_hud(
     rocket_q: Query<(&Transform, &Rocket)>,
+    stage_q: Query<&Children, With<RocketStage>>,
+    tank_q: Query<&FuelTank>,
     mut alt_q: Query<
         &mut Text,
         (
@@ -662,6 +768,18 @@ fn update_hud(
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);
     let speed = rocket.velocity.length();
 
+    let stage_fuel: f32 = rocket
+        .active_stage
+        .and_then(|se| stage_q.get(se).ok())
+        .map(|children| {
+            children
+                .iter()
+                .filter_map(|&c| tank_q.get(c).ok())
+                .map(|t| t.fuel)
+                .sum()
+        })
+        .unwrap_or(0.0);
+
     if let Ok(mut t) = alt_q.get_single_mut() {
         *t = Text::new(format!("ALT  {:>8.0} m", alt));
     }
@@ -669,15 +787,15 @@ fn update_hud(
         *t = Text::new(format!("VEL  {:>8.1} m/s", speed));
     }
     if let Ok(mut t) = fuel_q.get_single_mut() {
-        *t = Text::new(format!("FUEL {:>8.1}", rocket.fuel));
+        *t = Text::new(format!("FUEL {:>8.1}", stage_fuel));
     }
     if let Ok(mut t) = status_q.get_single_mut() {
         *t = Text::new(if rocket.crashed {
             "CRASHED  –  press R to reset".to_string()
         } else if rocket.landed {
-            "LANDED  –  SPACE to launch".to_string()
-        } else if rocket.fuel <= 0.0 {
-            "OUT OF FUEL".to_string()
+            "LANDED  –  W/↑ to launch".to_string()
+        } else if rocket.active_stage.is_some() && stage_fuel <= 0.0 {
+            "OUT OF FUEL  –  SPACE to stage".to_string()
         } else {
             String::new()
         });
