@@ -32,15 +32,39 @@ cargo run
 - **Atmosphere glow** — visual ring around the planet (no drag physics)
 - **Starfield** — 300 randomly placed background stars
 
+## MVP
+
+- That KSP Alpha experience: Design a rocket and pilot it to the moon!
+
+### VAB
+- [ ] Build a rocket with fuel tanks, engines, decouplers (landing gear optional!)
+- [ ] Save and name rocket designs
+- [ ] GUI with parts list, save/load at min
+### Flight
+- [x] Functioning parts
+    - [x] Engines
+    - [x] Fuel Tanks
+    - [x] Decouplers/staging???
+- [x] Reach orbit (Some kind of nav aids), staging, appoapsis/periapsis
+- [ ] Reach the moon: Decided on distance/size, tweak until moonrise works? Or display predictions?
+- [x] Land on the moon: Land if velocity is low enough, take off also allowed. Crash and restart as an option
+- [ ] Re-entry: Atmospheric drag/maybe parachute or something to land?
+- [ ] Quicksave/reaload would be nice
+- [ ] HUD of some kind
+
+### Game
+- [ ] Main menu, saves, settings
+- [ ] Some kind of art for HUDs, GUIs
+- [ ] Sprites for spaceships
+- [ ] Particle effects for atmosphere, engines
+- [ ] Terrain for planets
+
 ## Possible TODO
 
 ### Gameplay
-- [ ] Multiple fuel tanks or refueling on the surface
-- [ ] Separate burn stages / jettison mechanics
 - [ ] Throttle control (analog, not just 0/1)
-- [ ] Return-to-launch objective — score or mission structure
+- [ ] Objective list in top right, briefing on load for now
 - [ ] More celestial bodies (second moon, asteroid belt)
-- [ ] Gravity assists — use the moon's gravity to redirect trajectory
 
 ### Physics
 - [ ] Atmospheric drag on low-altitude passes

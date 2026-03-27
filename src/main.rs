@@ -15,21 +15,23 @@ use bevy::{
 };
 use rand::Rng;
 
-// ── Physics constants (tuned for fun, not SI realism) ─────────────────────────
+// ── Physics constants  ─────────────────────────
 const G: f32 = 200.0;
 const PLANET_MASS: f32 = 5.0e6; // G·M = 2·10⁷
 const PLANET_RADIUS: f32 = 3400.0;
 const PLANET_SURFACE_GRAVITY: f32 = G * PLANET_MASS / (PLANET_RADIUS * PLANET_RADIUS);
-const FUEL_RATE: f32 = 15.0; // fuel/s at full throttle (per tank)
-const ROT_SPEED: f32 = 2.5; // rad/s
-const START_HEIGHT: f32 = 80.0; // above surface
+const FUEL_RATE: f32 = 1.0; // fuel/s at full throttle (per tank)
+const ROT_SPEED: f32 = 1.5; // rad/s
 
-const MOON_MASS: f32 = 10e3; // G·M_moon = 1·10⁶
+const MOON_MASS: f32 = 5.0e4; // G·M_moon = 1·10⁶
 const MOON_RADIUS: f32 = 200.0;
-const MOON_ORBIT: f32 = 3000.0; // distance from planet center
+const MOON_ORBIT: f32 = 10000.0; // distance from planet center
 
 const LANDING_MAX_SPEED: f32 = 400.0; // max speed (or relative speed) for a safe landing
 const STAGE_SEP_VEL: f32 = 10.0;
+
+// ── Game constants ────────────────────────────────────────────────────────────────
+const MAP_VIEW_SCALE: f32 = 25.0;
 
 // ── Components ────────────────────────────────────────────────────────────────
 
@@ -236,7 +238,7 @@ fn setup(
     mut materials: ResMut<Assets<ColorMaterial>>,
 ) {
     let r0 = PLANET_RADIUS; // + START_HEIGHT; // 280 – initial orbit radius
-    let orbital_v = 0.; //(G * PLANET_MASS / r0).sqrt(); // ≈ 267 units/s
+                            // let orbital_v = 0.; //(G * PLANET_MASS / r0).sqrt(); // ≈ 267 units/s
 
     // Camera – start centered on the rocket
     commands.spawn((Camera2d, Transform::from_xyz(0., r0, 0.)));
@@ -423,20 +425,20 @@ fn handle_input(
 
     // Stage separation — Create new rocket with this stage
     if keys.just_pressed(KeyCode::Space) {
-
-
         // Note: This does not change the transform, not sure if that is an issue or not, now the stage's origin may be in a weird place
         if let Some(current) = rocket.active_stage.take() {
-            commands.spawn((
-                Visibility::default(),
-                tf.clone(),
-                Rocket {
-                    velocity: rocket.velocity - STAGE_SEP_VEL * Vec2::from_angle(rocket.angle),
-                    angle: rocket.angle,
-                    active_stage: Some(current),
-                    ..Default::default()
-                },
-            )).add_child(current);
+            commands
+                .spawn((
+                    Visibility::default(),
+                    tf.clone(),
+                    Rocket {
+                        velocity: rocket.velocity - STAGE_SEP_VEL * Vec2::from_angle(rocket.angle),
+                        angle: rocket.angle,
+                        active_stage: Some(current),
+                        ..Default::default()
+                    },
+                ))
+                .add_child(current);
         }
         rocket.active_stage = if !rocket.stage_queue.is_empty() {
             Some(rocket.stage_queue.remove(0))
@@ -564,7 +566,6 @@ fn physics_step(
                     .sum();
 
                 if total_thrust > 0.0 && total_fuel > 0.0 {
-
                     let nose = Vec2::from_angle(rocket.angle);
                     rocket.velocity += nose * total_thrust * dt;
 
@@ -596,6 +597,63 @@ fn update_fps(diagnostics: Res<DiagnosticsStore>, mut q: Query<&mut Text, With<H
     }
 }
 
+struct OrbitalParameters {
+    a: f32,       // semi-major axis
+    b: f32,       // semi-minor axis
+    ecc: f32,     // eccentricity
+    center: Vec2, // center of orbit
+    rot: Vec2,    // rotation aligning the loacl +X axis with the periapsis direction
+}
+
+impl OrbitalParameters {
+    pub fn calc(mass: f32, pos: Vec2, vel: Vec2) -> Option<Self> {
+        let mu = G * mass;
+
+        let r = pos.length().max(1.0);
+
+        // Specific orbital energy: ε = v²/2 − μ/r
+        let energy = 0.5 * vel.length_squared() - mu / r;
+
+        // Specific angular momentum (scalar Z component of r × v)
+        let h = pos.x * vel.y - pos.y * vel.x;
+        if h.abs() < 0.1 {
+            return None; // near-radial free-fall, skip
+        }
+
+        if energy >= 0.0 {
+            // Escape / hyperbolic trajectory — no closed ellipse to draw
+            return None;
+        }
+
+        // Eccentricity vector: points from focus toward periapsis, magnitude = eccentricity
+        // In 2D: (v × h) / μ − r̂,  where v × h = Vec2(vy·h, −vx·h)
+        let e_vec = Vec2::new(vel.y * h, -vel.x * h) / mu - pos / r;
+        let ecc = e_vec.length().clamp(0.0, 0.9999);
+
+        // Orbital elements
+        let a = -mu / (2.0 * energy); // semi-major axis
+        let b = a * (1.0 - ecc * ecc).sqrt(); // semi-minor axis
+
+        // Ellipse center: displaced from the focus (planet) opposite the eccentricity direction
+        let e_hat = if ecc > 1e-6 { e_vec / ecc } else { Vec2::X };
+        let center = -e_hat * (a * ecc);
+
+        // Rotation aligning the local +X axis with the periapsis direction
+        let rot = Vec2::from_angle(e_hat.y.atan2(e_hat.x));
+        Some(OrbitalParameters {
+            a,
+            b,
+            ecc,
+            center,
+            rot,
+        })
+    }
+
+    pub fn periapsis(&self) -> f32 {
+        self.a * (1.0 - self.ecc)
+    }
+}
+
 fn update_trajectory(
     rocket_q: Query<(&Transform, &Rocket), With<PlayerRocket>>,
     bodies: Query<(&Transform, &CelestialBody)>,
@@ -609,65 +667,37 @@ fn update_trajectory(
     }
 
     // Use the most massive fixed body as the orbital focus
-    let Some((focus, mu)) = bodies
+    let Some((focus, mass)) = bodies
         .iter()
         .filter(|(_, b)| b.fixed)
         .max_by(|(_, a), (_, b)| a.mass.partial_cmp(&b.mass).unwrap())
-        .map(|(tf, b)| (tf.translation.truncate(), G * b.mass))
+        .map(|(tf, b)| (tf.translation.truncate(), b.mass))
     else {
         return;
     };
+
     let pos = rtf.translation.truncate() - focus; // position relative to orbital focus
     let vel = rocket.velocity;
-    let r = pos.length().max(1.0);
 
-    // Specific orbital energy: ε = v²/2 − μ/r
-    let energy = 0.5 * vel.length_squared() - mu / r;
+    if let Some(orbit) = OrbitalParameters::calc(mass, pos, vel) {
+        let periapsis = orbit.periapsis();
+        let color = if periapsis <= PLANET_RADIUS {
+            Color::srgba(1.0, 0.4, 0.2, 0.6) // impact orbit
+        } else {
+            Color::srgba(0.4, 0.9, 1.0, 0.55) // safe orbit
+        };
 
-    // Specific angular momentum (scalar Z component of r × v)
-    let h = pos.x * vel.y - pos.y * vel.x;
-    if h.abs() < 0.1 {
-        return; // near-radial free-fall, skip
+        // Sample the ellipse and draw as a closed line strip
+        const SEGMENTS: usize = 128;
+        let points: Vec<Vec2> = (0..=SEGMENTS)
+            .map(|i| {
+                let theta = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+                focus + orbit.center + orbit.rot.rotate(Vec2::new(orbit.a * theta.cos(), orbit.b * theta.sin()))
+            })
+            .collect();
+
+        gizmos.linestrip_2d(points, color);
     }
-
-    if energy >= 0.0 {
-        // Escape / hyperbolic trajectory — no closed ellipse to draw
-        return;
-    }
-
-    // Eccentricity vector: points from focus toward periapsis, magnitude = eccentricity
-    // In 2D: (v × h) / μ − r̂,  where v × h = Vec2(vy·h, −vx·h)
-    let e_vec = Vec2::new(vel.y * h, -vel.x * h) / mu - pos / r;
-    let ecc = e_vec.length().clamp(0.0, 0.9999);
-
-    // Orbital elements
-    let a = -mu / (2.0 * energy); // semi-major axis
-    let b = a * (1.0 - ecc * ecc).sqrt(); // semi-minor axis
-
-    // Ellipse center: displaced from the focus (planet) opposite the eccentricity direction
-    let e_hat = if ecc > 1e-6 { e_vec / ecc } else { Vec2::X };
-    let center = -e_hat * (a * ecc);
-
-    // Rotation aligning the local +X axis with the periapsis direction
-    let rot = Vec2::from_angle(e_hat.y.atan2(e_hat.x));
-
-    let periapsis = a * (1.0 - ecc);
-    let color = if periapsis <= PLANET_RADIUS {
-        Color::srgba(1.0, 0.4, 0.2, 0.6) // impact orbit
-    } else {
-        Color::srgba(0.4, 0.9, 1.0, 0.55) // safe orbit
-    };
-
-    // Sample the ellipse and draw as a closed line strip
-    const SEGMENTS: usize = 128;
-    let points: Vec<Vec2> = (0..=SEGMENTS)
-        .map(|i| {
-            let theta = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-            focus + center + rot.rotate(Vec2::new(a * theta.cos(), b * theta.sin()))
-        })
-        .collect();
-
-    gizmos.linestrip_2d(points, color);
 }
 
 fn check_surface_contact(
@@ -769,7 +799,7 @@ fn follow_camera(
 
     let dt = time.delta_secs();
     let target_pos = Vec3::new(rtf.translation.x, rtf.translation.y, ctf.translation.z);
-    let target_scale = if map_view.0 { 10.0 } else { 1.0 };
+    let target_scale = if map_view.0 { MAP_VIEW_SCALE } else { 1.0 };
 
     ctf.translation = ctf.translation.lerp(target_pos, 6.0 * dt);
     proj.scale += (target_scale - proj.scale) * (6.0 * dt).min(1.0);
