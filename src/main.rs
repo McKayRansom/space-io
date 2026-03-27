@@ -8,22 +8,22 @@
 //!   R          reset to orbit
 
 use bevy::{
-    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
-    prelude::*,
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin}, math::FloatPow, prelude::*
 };
 use rand::Rng;
 
 // ── Physics constants (tuned for fun, not SI realism) ─────────────────────────
 const G: f32 = 200.0;
-const PLANET_MASS: f32 = 1.0e5; // G·M = 2·10⁷
-const PLANET_RADIUS: f32 = 700.0;
+const PLANET_MASS: f32 = 5.0e6; // G·M = 2·10⁷
+const PLANET_RADIUS: f32 = 3400.0;
+const PLANET_SURFACE_GRAVITY: f32 = G * PLANET_MASS / (PLANET_RADIUS * PLANET_RADIUS);
 const FUEL_RATE: f32 = 15.0; // fuel/s at full throttle (per tank)
 const ROT_SPEED: f32 = 2.5; // rad/s
 const START_HEIGHT: f32 = 80.0; // above surface
 
-const MOON_MASS: f32 = 5e3; // G·M_moon = 1·10⁶
-const MOON_RADIUS: f32 = 35.0;
-const MOON_ORBIT: f32 = 1500.0; // distance from planet center
+const MOON_MASS: f32 = 10e3; // G·M_moon = 1·10⁶
+const MOON_RADIUS: f32 = 200.0;
+const MOON_ORBIT: f32 = 3000.0; // distance from planet center
 
 const LANDING_MAX_SPEED: f32 = 400.0; // max speed (or relative speed) for a safe landing
 
@@ -137,20 +137,28 @@ fn spawn_default_stages(commands: &mut Commands) -> (Entity, Entity) {
         ..default()
     };
 
+    let exhaust_sprite = Sprite {
+        color: Color::srgba(1.0, 0.55, 0.05, 0.0),
+        custom_size: Some(Vec2::new(7.0, 22.0)),
+        ..default()
+    };
+
     let stage1 = commands
         .spawn((RocketStage, Transform::from_xyz(0., -10., 0.), Visibility::default()))
         .with_children(|p| {
-            p.spawn((fuel_tank_sprite.clone(), Transform::from_xyz(0., -24., 0.), FuelTank { fuel: 80.0, capacity: 80.0 }));
-            p.spawn(Engine { thrust: 120.0 });
+            p.spawn((fuel_tank_sprite.clone(), Transform::from_xyz(0., -44., 0.), FuelTank { fuel: 80.0, capacity: 80.0 }));
+            p.spawn(Engine { thrust: PLANET_SURFACE_GRAVITY * 1.5});
             p.spawn(Decoupler);
+            p.spawn((exhaust_sprite.clone(), Transform::from_xyz(0., -58., -0.1), Exhaust));
         })
         .id();
 
     let stage2 = commands
         .spawn((RocketStage, Transform::default(), Visibility::default()))
         .with_children(|p| {
-            p.spawn((fuel_tank_sprite.clone(), Transform::from_xyz(0., -10., 0.), FuelTank { fuel: 40.0, capacity: 40.0 }));
-            p.spawn(Engine { thrust: 80.0 });
+            p.spawn((fuel_tank_sprite.clone(), Transform::from_xyz(0., -26., 0.), FuelTank { fuel: 40.0, capacity: 40.0 }));
+            p.spawn(Engine { thrust: PLANET_SURFACE_GRAVITY * 1.3 });
+            p.spawn((exhaust_sprite.clone(), Transform::from_xyz(0., -40., -0.1), Exhaust));
         })
         .id();
 
@@ -199,7 +207,7 @@ fn setup(
 
     // Atmosphere glow ring (visual only, no physics)
     commands.spawn((
-        Mesh2d(meshes.add(Annulus::new(PLANET_RADIUS + 1.0, PLANET_RADIUS + 40.0))),
+        Mesh2d(meshes.add(Annulus::new(PLANET_RADIUS + 1.0, PLANET_RADIUS *1.1))),
         MeshMaterial2d(materials.add(Color::srgba(0.4, 0.7, 1.0, 0.10))),
         Transform::from_xyz(0., 0., 0.05),
     ));
@@ -245,18 +253,7 @@ fn setup(
         },
     ))
     .add_child(stage1)
-    .add_child(stage2)
-    .with_children(|parent| {
-        parent.spawn((
-            Sprite {
-                color: Color::srgba(1.0, 0.55, 0.05, 0.0),
-                custom_size: Some(Vec2::new(7.0, 22.0)),
-                ..default()
-            },
-            Transform::from_xyz(0., -24., -0.1),
-            Exhaust,
-        ));
-    });
+    .add_child(stage2);
 
     // ── HUD ────────────────────────────────────────────────────────────────
     let mono = TextFont {
@@ -680,27 +677,29 @@ fn check_surface_contact(
 fn update_exhaust(
     rocket_q: Query<&Rocket>,
     stage_q: Query<&Children, With<RocketStage>>,
+    stage_parent_q: Query<&Parent, With<RocketStage>>,
     tank_q: Query<&FuelTank>,
-    mut exhaust_q: Query<&mut Sprite, With<Exhaust>>,
+    mut exhaust_q: Query<(&Parent, &mut Sprite), With<Exhaust>>,
 ) {
-    let Ok(rocket) = rocket_q.get_single() else {
-        return;
-    };
-    let Ok(mut esp) = exhaust_q.get_single_mut() else {
-        return;
-    };
+    for (parent, mut sprite) in exhaust_q.iter_mut() {
+        let stage_entity = parent.get();
+        let Ok(rocket) = stage_parent_q
+            .get(stage_entity)
+            .and_then(|p| rocket_q.get(p.get())) else { continue; };
 
-    let has_fuel = rocket.active_stage
-        .and_then(|se| stage_q.get(se).ok())
-        .map(|children| {
-            children
-                .iter()
-                .any(|&c| tank_q.get(c).map(|t| t.fuel > 0.0).unwrap_or(false))
-        })
-        .unwrap_or(false);
+        let is_active = rocket.active_stage == Some(stage_entity);
+        let has_fuel = stage_q
+            .get(stage_entity)
+            .map(|children| {
+                children
+                    .iter()
+                    .any(|&c| tank_q.get(c).map(|t| t.fuel > 0.0).unwrap_or(false))
+            })
+            .unwrap_or(false);
 
-    let alpha = if rocket.throttle > 0.0 && has_fuel { 0.9 } else { 0.0 };
-    esp.color = Color::srgba(1.0, 0.55, 0.05, alpha);
+        let alpha = if rocket.throttle > 0.0 && is_active && has_fuel { 0.9 } else { 0.0 };
+        sprite.color = Color::srgba(1.0, 0.55, 0.05, alpha);
+    }
 }
 
 fn follow_camera(
