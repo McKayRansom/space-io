@@ -59,6 +59,17 @@ struct CelestialBody {
     fixed: bool, // if true, unaffected by gravity (e.g. the central planet)
 }
 
+impl CelestialBody {
+    pub fn gravity_at(&self, dist: Vec2) -> f32 {
+        let mut dist_sq = dist.length_squared();
+        if dist_sq < 1.0 {
+            dist_sq = 1.0;
+        }
+        // let dist = dist_sq.sqrt();
+        G * self.mass / dist_sq
+    }
+}
+
 #[derive(Component)]
 struct Exhaust;
 
@@ -471,6 +482,7 @@ fn handle_input(
     }
 }
 
+// TODO: N-body is overkill here, let's just do the parent LOL
 fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mut CelestialBody)>) {
     let dt = time.delta_secs();
 
@@ -497,6 +509,7 @@ fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mu
             }
             let dist = dist_sq.sqrt();
             accel += (to_other / dist) * (G * other_mass / dist_sq);
+            // accel +=
         }
         body.velocity += accel * dt;
         let v = body.velocity;
@@ -654,11 +667,54 @@ impl OrbitalParameters {
     }
 }
 
+fn draw_orbit(gizmos: &mut Gizmos, focus: Vec2, orbit: OrbitalParameters) {
+    let periapsis = orbit.periapsis();
+    let color = if periapsis <= PLANET_RADIUS {
+        Color::srgba(1.0, 0.4, 0.2, 0.6) // impact orbit
+    } else {
+        Color::srgba(0.4, 0.9, 1.0, 0.55) // safe orbit
+    };
+
+    // Sample the ellipse and draw as a closed line strip
+    const SEGMENTS: usize = 128;
+    let points: Vec<Vec2> = (0..=SEGMENTS)
+        .map(|i| {
+            let theta = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
+            focus
+                + orbit.center
+                + orbit
+                    .rot
+                    .rotate(Vec2::new(orbit.a * theta.cos(), orbit.b * theta.sin()))
+        })
+        .collect();
+
+    gizmos.linestrip_2d(points, color);
+}
+
 fn update_trajectory(
     rocket_q: Query<(&Transform, &Rocket), With<PlayerRocket>>,
     bodies: Query<(&Transform, &CelestialBody)>,
     mut gizmos: Gizmos,
 ) {
+    // draw moon trajectory
+    for (bt, body) in bodies.iter() {
+        if body.fixed {
+            continue;
+        }
+        for (bt2, body2) in bodies.iter() {
+            if !body2.fixed {
+                continue;
+            }
+
+            let pos = bt.translation.truncate() - bt2.translation.truncate(); // position relative to orbital focus
+            let vel = body.velocity;
+
+            if let Some(orbit) = OrbitalParameters::calc(body2.mass, pos, vel) {
+                draw_orbit(&mut gizmos, bt2.translation.truncate(), orbit);
+            }
+        }
+    }
+
     let Ok((rtf, rocket)) = rocket_q.get_single() else {
         return;
     };
@@ -666,11 +722,16 @@ fn update_trajectory(
         return;
     }
 
-    // Use the most massive fixed body as the orbital focus
+    // Use the body with the highest gravitational force
     let Some((focus, mass)) = bodies
         .iter()
-        .filter(|(_, b)| b.fixed)
-        .max_by(|(_, a), (_, b)| a.mass.partial_cmp(&b.mass).unwrap())
+        // .filter(|(_, b)| b.fixed)
+        .max_by(|(at, a), (bt, b)| {
+            let a_grav = a.gravity_at(at.translation.truncate() - rtf.translation.truncate());
+            let b_grav = b.gravity_at(bt.translation.truncate() - rtf.translation.truncate());
+            // bt.translation.truncate() - at.translation.truncate()
+            a_grav.partial_cmp(&b_grav).unwrap()
+        })
         .map(|(tf, b)| (tf.translation.truncate(), b.mass))
     else {
         return;
@@ -680,23 +741,7 @@ fn update_trajectory(
     let vel = rocket.velocity;
 
     if let Some(orbit) = OrbitalParameters::calc(mass, pos, vel) {
-        let periapsis = orbit.periapsis();
-        let color = if periapsis <= PLANET_RADIUS {
-            Color::srgba(1.0, 0.4, 0.2, 0.6) // impact orbit
-        } else {
-            Color::srgba(0.4, 0.9, 1.0, 0.55) // safe orbit
-        };
-
-        // Sample the ellipse and draw as a closed line strip
-        const SEGMENTS: usize = 128;
-        let points: Vec<Vec2> = (0..=SEGMENTS)
-            .map(|i| {
-                let theta = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-                focus + orbit.center + orbit.rot.rotate(Vec2::new(orbit.a * theta.cos(), orbit.b * theta.sin()))
-            })
-            .collect();
-
-        gizmos.linestrip_2d(points, color);
+        draw_orbit(&mut gizmos, focus, orbit);
     }
 }
 
