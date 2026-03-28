@@ -82,7 +82,6 @@ struct RocketStage;
 #[derive(Component)]
 struct FuelTank {
     fuel: f32,
-    capacity: f32,
 }
 
 #[derive(Component)]
@@ -93,15 +92,14 @@ struct Engine {
 #[derive(Component)]
 struct Decoupler; // marks a stage as separable from the one above
 
-// HUD marker components (each unique so queries are unambiguous)
-#[derive(Component)]
-struct HudAlt;
-#[derive(Component)]
-struct HudVel;
-#[derive(Component)]
-struct HudFuel;
-#[derive(Component)]
-struct HudStatus;
+// HUD label — one enum covers all telemetry rows; add a variant to add a new row
+#[derive(Component, PartialEq, Eq)]
+enum HudLabel {
+    Alt,
+    Vel,
+    Fuel,
+    Status,
+}
 #[derive(Component)]
 struct HudFps;
 
@@ -181,7 +179,6 @@ fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
                 Transform::from_xyz(0., -44., 0.),
                 FuelTank {
                     fuel: 80.0,
-                    capacity: 80.0,
                 },
             ));
             p.spawn(Engine {
@@ -204,7 +201,6 @@ fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
                 Transform::from_xyz(0., -26., 0.),
                 FuelTank {
                     fuel: 40.0,
-                    capacity: 40.0,
                 },
             ));
             p.spawn(Engine {
@@ -333,7 +329,7 @@ fn setup(
             left: Val::Px(12.),
             ..default()
         },
-        HudAlt,
+        HudLabel::Alt,
     ));
     commands.spawn((
         Text::new("VEL  --------"),
@@ -345,7 +341,7 @@ fn setup(
             left: Val::Px(12.),
             ..default()
         },
-        HudVel,
+        HudLabel::Vel,
     ));
     commands.spawn((
         Text::new("FUEL --------"),
@@ -357,7 +353,7 @@ fn setup(
             left: Val::Px(12.),
             ..default()
         },
-        HudFuel,
+        HudLabel::Fuel,
     ));
     commands.spawn((
         Text::new(""),
@@ -372,7 +368,7 @@ fn setup(
             left: Val::Px(12.),
             ..default()
         },
-        HudStatus,
+        HudLabel::Status,
     ));
     commands.spawn((
         Text::new("FPS --"),
@@ -889,49 +885,13 @@ fn update_hud(
     rocket_q: Query<(&Transform, &Rocket), With<PlayerRocket>>,
     stage_q: Query<&Children, With<RocketStage>>,
     tank_q: Query<&FuelTank>,
-    mut alt_q: Query<
-        &mut Text,
-        (
-            With<HudAlt>,
-            Without<HudVel>,
-            Without<HudFuel>,
-            Without<HudStatus>,
-        ),
-    >,
-    mut vel_q: Query<
-        &mut Text,
-        (
-            With<HudVel>,
-            Without<HudAlt>,
-            Without<HudFuel>,
-            Without<HudStatus>,
-        ),
-    >,
-    mut fuel_q: Query<
-        &mut Text,
-        (
-            With<HudFuel>,
-            Without<HudAlt>,
-            Without<HudVel>,
-            Without<HudStatus>,
-        ),
-    >,
-    mut status_q: Query<
-        &mut Text,
-        (
-            With<HudStatus>,
-            Without<HudAlt>,
-            Without<HudVel>,
-            Without<HudFuel>,
-        ),
-    >,
+    mut hud_q: Query<(&HudLabel, &mut Text)>,
 ) {
     let Ok((tf, rocket)) = rocket_q.get_single() else {
         return;
     };
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);
     let speed = rocket.velocity.length();
-
     let stage_fuel: f32 = rocket
         .active_stage
         .and_then(|se| stage_q.get(se).ok())
@@ -944,24 +904,22 @@ fn update_hud(
         })
         .unwrap_or(0.0);
 
-    if let Ok(mut t) = alt_q.get_single_mut() {
-        *t = Text::new(format!("ALT  {:>8.0} m", alt));
-    }
-    if let Ok(mut t) = vel_q.get_single_mut() {
-        *t = Text::new(format!("VEL  {:>8.1} m/s", speed));
-    }
-    if let Ok(mut t) = fuel_q.get_single_mut() {
-        *t = Text::new(format!("FUEL {:>8.1}", stage_fuel));
-    }
-    if let Ok(mut t) = status_q.get_single_mut() {
-        *t = Text::new(if rocket.crashed {
-            "CRASHED  –  press R to reset".to_string()
-        } else if rocket.landed {
-            "LANDED  –  W/↑ to launch".to_string()
-        } else if rocket.active_stage.is_some() && stage_fuel <= 0.0 {
-            "OUT OF FUEL  –  SPACE to stage".to_string()
-        } else {
-            String::new()
+    for (label, mut text) in &mut hud_q {
+        *text = Text::new(match label {
+            HudLabel::Alt => format!("ALT  {:>8.0} m", alt),
+            HudLabel::Vel => format!("VEL  {:>8.1} m/s", speed),
+            HudLabel::Fuel => format!("FUEL {:>8.1}", stage_fuel),
+            HudLabel::Status => {
+                if rocket.crashed {
+                    "CRASHED  –  press R to reset".to_string()
+                } else if rocket.landed {
+                    "LANDED  –  W/↑ to launch".to_string()
+                } else if rocket.active_stage.is_some() && stage_fuel <= 0.0 {
+                    "OUT OF FUEL  –  SPACE to stage".to_string()
+                } else {
+                    String::new()
+                }
+            }
         });
     }
 }
