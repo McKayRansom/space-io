@@ -23,7 +23,8 @@ const PLANET_SURFACE_GRAVITY: f32 = G * PLANET_MASS / (PLANET_RADIUS * PLANET_RA
 const FUEL_RATE: f32 = 1.0; // fuel/s at full throttle (per tank)
 const ROT_SPEED: f32 = 1.5; // rad/s
 
-const MOON_MASS: f32 = 5.0e4; // G·M_moon = 1·10⁶
+const MOON_SURFACE_GRAVITY: f32 = PLANET_SURFACE_GRAVITY / 6.0;
+const MOON_MASS: f32 = MOON_SURFACE_GRAVITY * (MOON_RADIUS * MOON_RADIUS) / G; // G·M_moon = 1·10⁶
 const MOON_RADIUS: f32 = 200.0;
 const MOON_ORBIT: f32 = 10000.0; // distance from planet center
 
@@ -225,7 +226,7 @@ fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
             MeshMaterial2d(assets.default_material.clone()),
             Transform::from_xyz(0., PLANET_RADIUS, 1.0),
             Rocket {
-                velocity: Vec2::new(0., 0.),
+                velocity: Vec2::ZERO,
                 angle: 0.0,
                 throttle: 0.0,
                 crashed: false,
@@ -250,6 +251,8 @@ fn setup(
 ) {
     let r0 = PLANET_RADIUS; // + START_HEIGHT; // 280 – initial orbit radius
                             // let orbital_v = 0.; //(G * PLANET_MASS / r0).sqrt(); // ≈ 267 units/s
+
+    // assert!(MOON_SURFACE_GRAVITY < PLANET_SURFACE_GRAVITY);
 
     // Camera – start centered on the rocket
     commands.spawn((Camera2d, Transform::from_xyz(0., r0, 0.)));
@@ -412,6 +415,7 @@ fn handle_input(
     mut commands: Commands,
     mut q: Query<(Entity, &mut Transform, &mut Rocket), With<PlayerRocket>>,
     mut map_view: ResMut<MapView>,
+    bodies: Query<(&Transform, &CelestialBody), Without<Rocket>>,
 ) {
     let Ok((rocket_entity, mut tf, mut rocket)) = q.get_single_mut() else {
         return;
@@ -479,6 +483,37 @@ fn handle_input(
         }
     } else {
         rocket.throttle = if thrusting { 1.0 } else { 0.0 };
+    }
+
+    // debugging tools
+    if keys.just_pressed(KeyCode::Digit1) {
+        // go back to planet
+        *tf = Transform::from_xyz(0., PLANET_RADIUS, 1.0);
+        rocket.velocity = Vec2::ZERO;
+        rocket.angle = 0.0;
+        rocket.landed = false;
+        rocket.crashed = false;
+    }
+    if keys.just_pressed(KeyCode::Digit2) {
+        // go to orbit
+        let r0 = PLANET_RADIUS * 1.1;
+        let orbital_v = (G * PLANET_MASS / r0).sqrt(); // ≈ 267 units/s
+        *tf = Transform::from_xyz(0., r0, 1.0);
+        rocket.velocity = Vec2::new(orbital_v, 0.0);
+        rocket.angle = 0.0;
+        rocket.landed = false;
+        rocket.crashed = false;
+    }
+    if keys.just_pressed(KeyCode::Digit3) {
+        // go to moon orbit
+        let (moon_tf, moon) = bodies.iter().find(|body| body.1.fixed == false).unwrap();
+        let r0 = MOON_RADIUS * 1.1;
+        let orbital_v = (G * MOON_MASS / r0).sqrt(); // ≈ 267 units/s
+        *tf = Transform::from_xyz(moon_tf.translation.x, moon_tf.translation.y + r0, 1.0);
+        rocket.velocity = moon.velocity + Vec2::new(orbital_v, 0.0);
+        rocket.angle = 0.0;
+        rocket.landed = false;
+        rocket.crashed = false;
     }
 }
 
