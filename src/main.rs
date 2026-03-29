@@ -11,6 +11,7 @@ use std::f32::consts::FRAC_PI_2;
 
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
+    log,
     prelude::*,
 };
 use rand::Rng;
@@ -32,12 +33,13 @@ const LANDING_MAX_SPEED: f32 = 400.0; // max speed (or relative speed) for a saf
 const STAGE_SEP_VEL: f32 = 10.0;
 
 // ── Game constants ────────────────────────────────────────────────────────────────
+const DEFAULT_SCALE: f32 = 0.5;
 const MAP_VIEW_SCALE: f32 = 25.0;
 
-const FUEL_TANK_SIZE: Vec2 = Vec2::new(18.0, 22.0);
-const EXHAUST_SIZE: Vec2 = Vec2::new(7.0, 22.0);
-const POD_BOTTOM_Y: f32 = -9.0;
-const STAGE_GAP: f32 = 2.0;
+const FUEL_TANK_SIZE: Vec2 = Vec2::new(0.0, 16.0);
+const ENGINE_SIZE: Vec2 = Vec2::new(0.0, 6.0);
+const POD_BOTTOM_Y: f32 = -6.0;
+const STAGE_GAP: f32 = 0.0;
 const DEFAULT_FUEL_PER_TANK: f32 = 40.0;
 const DEFAULT_THRUST: f32 = PLANET_SURFACE_GRAVITY * 1.3;
 
@@ -45,7 +47,14 @@ const DEFAULT_THRUST: f32 = PLANET_SURFACE_GRAVITY * 1.3;
 const POD_MASS: f32 = 5.0;
 const ENGINE_MASS: f32 = 3.0;
 const FUEL_TANK_DRY_MASS: f32 = 1.0; // empty tank shell
-const FUEL_DENSITY: f32 = 0.5;        // mass per unit of fuel
+const FUEL_DENSITY: f32 = 0.5; // mass per unit of fuel
+
+// ── Animation constants ────────────────────────────────────────────────────────────────
+const SPRITE_POD: usize = 0;
+const SPRITE_FUEL: usize = 16;
+const SPRITE_ENGINE: usize = 32;
+const SPRITE_EXHAUST_START: usize = 48;
+const SPRITE_EXHUAST_END: usize = 50;
 
 // ── Components ────────────────────────────────────────────────────────────────
 
@@ -83,9 +92,6 @@ impl CelestialBody {
         G * self.mass / dist_sq
     }
 }
-
-#[derive(Component)]
-struct Exhaust;
 
 #[derive(Component)]
 struct CommandPod;
@@ -135,8 +141,10 @@ struct MapView(bool);
 
 #[derive(Resource)]
 struct RocketAssets {
-    command_pod_mesh: Handle<Mesh>,
-    default_material: Handle<ColorMaterial>,
+    command_pod_sprite: Sprite,
+    tank_sprite: Sprite,
+    engine_sprite: Sprite,
+    exhaust: Sprite,
 }
 
 // ── App ───────────────────────────────────────────────────────────────────────
@@ -144,14 +152,18 @@ struct RocketAssets {
 fn main() {
     App::new()
         .add_plugins(FrameTimeDiagnosticsPlugin)
-        .add_plugins(DefaultPlugins.set(WindowPlugin {
-            primary_window: Some(Window {
-                title: "Space IO – 2D KSP Prototype".into(),
-                resolution: (1280., 720.).into(),
-                ..default()
-            }),
-            ..default()
-        }))
+        .add_plugins(
+            DefaultPlugins
+                .set(WindowPlugin {
+                    primary_window: Some(Window {
+                        title: "Space IO – 2D KSP Prototype".into(),
+                        resolution: (1280., 720.).into(),
+                        ..default()
+                    }),
+                    ..default()
+                })
+                .set(ImagePlugin::default_nearest()),
+        )
         .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.08)))
         .insert_resource(MapView::default())
         .add_systems(Startup, (setup, apply_deferred, relayout_rocket).chain())
@@ -167,6 +179,7 @@ fn main() {
                 rebuild_editor_ui,
                 update_trajectory,
                 update_exhaust,
+                animate_sprite,
                 follow_camera,
                 update_hud,
                 update_fps,
@@ -183,27 +196,17 @@ fn main() {
 /// `relayout_rocket` to position everything correctly.
 fn build_stage(
     commands: &mut Commands,
+    rocket_assets: &RocketAssets,
     fuel_count: u32,
     fuel_per_tank: f32,
     thrust: f32,
 ) -> Entity {
-    let fuel_tank_sprite = Sprite {
-        color: Color::srgba(1.0, 1.0, 1.0, 1.0),
-        custom_size: Some(FUEL_TANK_SIZE),
-        ..default()
-    };
-    let exhaust_sprite = Sprite {
-        color: Color::srgba(1.0, 0.55, 0.05, 0.0),
-        custom_size: Some(EXHAUST_SIZE),
-        ..default()
-    };
-
     commands
         .spawn((RocketStage, Transform::default(), Visibility::default()))
         .with_children(|p| {
             for _ in 0..fuel_count {
                 p.spawn((
-                    fuel_tank_sprite.clone(),
+                    rocket_assets.tank_sprite.clone(),
                     Transform::default(),
                     FuelTank {
                         fuel: fuel_per_tank,
@@ -211,21 +214,32 @@ fn build_stage(
                     },
                 ));
             }
-            p.spawn(Engine { thrust });
-            p.spawn((exhaust_sprite.clone(), Transform::default(), Exhaust));
+            p.spawn((
+                rocket_assets.engine_sprite.clone(),
+                Transform::default(),
+                Engine { thrust },
+            ))
+            .with_child((
+                rocket_assets.exhaust.clone(),
+                Transform::from_xyz(0.0, -3.0 - 8.0, 0.0),
+                AnimationIndices {
+                    first: SPRITE_EXHAUST_START,
+                    last: SPRITE_EXHUAST_END,
+                },
+                AnimationTimer(Timer::from_seconds(0.1, TimerMode::Repeating)),
+            ));
         })
         .id()
 }
 
 /// Spawn the default two-stage rocket.
 fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
-    let stage1 = build_stage(commands, 1, 80.0, PLANET_SURFACE_GRAVITY * 1.5);
-    let stage2 = build_stage(commands, 1, 40.0, PLANET_SURFACE_GRAVITY * 1.3,);
+    let stage1 = build_stage(commands, assets, 1, 80.0, PLANET_SURFACE_GRAVITY * 1.5);
+    let stage2 = build_stage(commands, assets, 1, 40.0, PLANET_SURFACE_GRAVITY * 1.3);
 
     let pod = commands
         .spawn((
-            Mesh2d(assets.command_pod_mesh.clone()),
-            MeshMaterial2d(assets.default_material.clone()),
+            assets.command_pod_sprite.clone(),
             Transform::default(),
             CommandPod,
         ))
@@ -247,12 +261,44 @@ fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
         .add_child(stage2);
 }
 
+// ── Animation ─────────────────────────────────────────────────────────────────────
+#[derive(Component)]
+struct AnimationIndices {
+    first: usize,
+    last: usize,
+}
+
+#[derive(Component, Deref, DerefMut)]
+struct AnimationTimer(Timer);
+
+fn animate_sprite(
+    time: Res<Time>,
+    mut query: Query<(&AnimationIndices, &mut AnimationTimer, &mut Sprite)>,
+) {
+    for (indices, mut timer, mut sprite) in &mut query {
+        timer.tick(time.delta());
+
+        if timer.just_finished() {
+            if let Some(atlas) = &mut sprite.texture_atlas {
+                atlas.index = if atlas.index >= indices.last {
+                    indices.first
+                } else {
+                    log::info!("Switching anim index to: {}", atlas.index + 1);
+                    atlas.index + 1
+                };
+            }
+        }
+    }
+}
+
 // ── Setup ─────────────────────────────────────────────────────────────────────
 
 fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
     let r0 = PLANET_RADIUS; // + START_HEIGHT; // 280 – initial orbit radius
                             // let orbital_v = 0.; //(G * PLANET_MASS / r0).sqrt(); // ≈ 267 units/s
@@ -311,13 +357,44 @@ fn setup(
     ));
 
     // ── Rocket ─────────────────────────────────────────────────────────────
+    let texture = asset_server.load("space-io.png");
+    let layout = TextureAtlasLayout::from_grid(UVec2::splat(16), 16, 16, None, None);
+    let texture_atlas_layout = texture_atlas_layouts.add(layout);
+
     let rocket_assets = RocketAssets {
-        command_pod_mesh: meshes.add(Triangle2d::new(
-            Vec2::new(0., 10.),  // nose
-            Vec2::new(-9., -9.), // left base
-            Vec2::new(9., -9.),  // right base
-        )),
-        default_material: materials.add(Color::srgb(0.85, 0.85, 0.95)),
+        command_pod_sprite: Sprite::from_atlas_image(
+            texture.clone(),
+            TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                index: SPRITE_POD,
+            },
+        ),
+        tank_sprite: Sprite {
+            image: texture.clone(),
+            texture_atlas: Some(TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                index: SPRITE_FUEL,
+            }),
+            ..Default::default()
+        },
+        engine_sprite: Sprite {
+            image: texture.clone(),
+            texture_atlas: Some(TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                index: SPRITE_ENGINE,
+            }),
+            rect: Some(Rect::new(0.0, 0.0, 16.0, 6.0)),
+            ..Default::default()
+        },
+        exhaust: Sprite {
+            image: texture.clone(),
+            texture_atlas: Some(TextureAtlas {
+                layout: texture_atlas_layout.clone(),
+                index: SPRITE_EXHAUST_START,
+            }),
+            color: Color::NONE,
+            ..Default::default()
+        },
     };
     spawn_default_rocket(&mut commands, &rocket_assets);
     commands.insert_resource(rocket_assets);
@@ -764,6 +841,7 @@ fn update_trajectory(
     }
 
     // Use the body with the highest gravitational force
+    // TODO: THIS DOESN"T WORK
     let Some((focus, mass)) = bodies
         .iter()
         // .filter(|(_, b)| b.fixed)
@@ -836,9 +914,10 @@ fn update_exhaust(
     stage_q: Query<&Children, With<RocketStage>>,
     stage_parent_q: Query<&Parent, With<RocketStage>>,
     tank_q: Query<&FuelTank>,
-    mut exhaust_q: Query<(&Parent, &mut Sprite), With<Exhaust>>,
+    mut sprite_q: Query<&mut Sprite, Without<Engine>>,
+    mut engine_q: Query<(&Parent, &Children), With<Engine>>,
 ) {
-    for (parent, mut sprite) in exhaust_q.iter_mut() {
+    for (parent, children) in engine_q.iter_mut() {
         let stage_entity = parent.get();
         let Ok(rocket) = stage_parent_q
             .get(stage_entity)
@@ -857,12 +936,15 @@ fn update_exhaust(
             })
             .unwrap_or(false);
 
-        let alpha = if rocket.throttle > 0.0 && is_active && has_fuel {
-            0.9
+        // TODO: Move this calculation to physics step!
+        let active = rocket.throttle > 0.0 && is_active && has_fuel;
+
+        let mut sprite = sprite_q.get_mut(children[0]).unwrap();
+        if active {
+            sprite.color = Color::default();
         } else {
-            0.0
-        };
-        sprite.color = Color::srgba(1.0, 0.55, 0.05, alpha);
+            sprite.color = Color::NONE;
+        }
     }
 }
 
@@ -885,7 +967,11 @@ fn follow_camera(
 
     let dt = time.delta_secs();
     let target_pos = Vec3::new(rtf.translation.x, rtf.translation.y, ctf.translation.z);
-    let target_scale = if map_view.0 { MAP_VIEW_SCALE } else { 1.0 };
+    let target_scale = if map_view.0 {
+        MAP_VIEW_SCALE
+    } else {
+        DEFAULT_SCALE
+    };
 
     ctf.translation = ctf.translation.lerp(target_pos, 6.0 * dt);
     proj.scale += (target_scale - proj.scale) * (6.0 * dt).min(1.0);
@@ -902,7 +988,7 @@ fn update_hud(
     };
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);
     let speed = rocket.velocity.length();
-    // let 
+    // let
     let (stage_fuel, stage_capacity): (f32, f32) = rocket
         .active_stage
         .and_then(|se| stage_q.get(se).ok())
@@ -948,7 +1034,6 @@ fn relayout_rocket(
     stage_q: Query<&Children, With<RocketStage>>,
     tank_q: Query<&FuelTank>,
     engine_check: Query<(), With<Engine>>,
-    exhaust_check: Query<(), With<Exhaust>>,
     pod_q: Query<Entity, With<CommandPod>>,
     mut transforms: Query<&mut Transform>,
 ) {
@@ -980,7 +1065,7 @@ fn relayout_rocket(
         stage_entity: Entity,
         stage_y: f32,
         tank_ys: Vec<(Entity, f32, f32)>, // (entity, local_y_in_stage, mass)
-        exhaust_y: f32,
+        engine_y: f32,
     }
 
     let mut layouts: Vec<StageLayout> = Vec::new();
@@ -1016,7 +1101,7 @@ fn relayout_rocket(
             mass_items.push((abs_y, tank_mass));
         }
 
-        let exhaust_y = -(tank_count as f32 * FUEL_TANK_SIZE.y) - EXHAUST_SIZE.y / 2.0;
+        let exhaust_y = -(tank_count as f32 * FUEL_TANK_SIZE.y) - ENGINE_SIZE.y / 2.0;
 
         // Engine mass — positioned roughly at exhaust location
         for &_e in &engines {
@@ -1026,14 +1111,17 @@ fn relayout_rocket(
         layouts.push(StageLayout {
             stage_entity: *stage_entity,
             stage_y,
-            tank_ys: tanks.into_iter().map(|(e, ly)| {
-                let tank = tank_q.get(e).unwrap();
-                (e, ly, FUEL_TANK_DRY_MASS + tank.fuel * FUEL_DENSITY)
-            }).collect(),
-            exhaust_y,
+            tank_ys: tanks
+                .into_iter()
+                .map(|(e, ly)| {
+                    let tank = tank_q.get(e).unwrap();
+                    (e, ly, FUEL_TANK_DRY_MASS + tank.fuel * FUEL_DENSITY)
+                })
+                .collect(),
+            engine_y: exhaust_y,
         });
 
-        cursor_y -= tank_count as f32 * FUEL_TANK_SIZE.y + EXHAUST_SIZE.y;
+        cursor_y -= tank_count as f32 * FUEL_TANK_SIZE.y + ENGINE_SIZE.y;
     }
 
     // ── Pass 2: compute centre of mass ────────────────────────────────────
@@ -1068,12 +1156,12 @@ fn relayout_rocket(
             }
         }
 
-        // Exhausts and engines keep their local y within the stage
+        // engines keep their local y within the stage
         if let Ok(children) = stage_q.get(layout.stage_entity) {
             for &child in children.iter() {
-                if exhaust_check.get(child).is_ok() {
+                if engine_check.get(child).is_ok() {
                     if let Ok(mut tf) = transforms.get_mut(child) {
-                        tf.translation.y = layout.exhaust_y;
+                        tf.translation.y = layout.engine_y;
                         tf.translation.z = -0.1;
                     }
                 }
@@ -1214,6 +1302,7 @@ fn rebuild_editor_ui(
 /// editor buttons, plus the "add stage" button.
 fn handle_editor_input(
     mut commands: Commands,
+    rocket_assets: Res<RocketAssets>,
     mouse: Res<ButtonInput<MouseButton>>,
     mut rocket_q: Query<(Entity, &mut Rocket), With<PlayerRocket>>,
     stage_q: Query<&Children, With<RocketStage>>,
@@ -1231,14 +1320,9 @@ fn handle_editor_input(
 
         // Left click: add a fuel tank
         if *interaction == Interaction::Pressed && mouse.just_pressed(MouseButton::Left) {
-            let fuel_tank_sprite = Sprite {
-                color: Color::srgba(1.0, 1.0, 1.0, 1.0),
-                custom_size: Some(FUEL_TANK_SIZE),
-                ..default()
-            };
             let tank = commands
                 .spawn((
-                    fuel_tank_sprite,
+                    rocket_assets.tank_sprite.clone(),
                     Transform::default(),
                     FuelTank {
                         fuel: DEFAULT_FUEL_PER_TANK,
@@ -1283,8 +1367,13 @@ fn handle_editor_input(
     // "Add stage" button
     for interaction in &add_button {
         if *interaction == Interaction::Pressed && mouse.just_pressed(MouseButton::Left) {
-            let new_stage =
-                build_stage(&mut commands, 1, DEFAULT_FUEL_PER_TANK, DEFAULT_THRUST);
+            let new_stage = build_stage(
+                &mut commands,
+                &rocket_assets,
+                1,
+                DEFAULT_FUEL_PER_TANK,
+                DEFAULT_THRUST,
+            );
             commands.entity(rocket_entity).add_child(new_stage);
 
             // New stage goes to the bottom (fires first = active_stage)
