@@ -34,6 +34,13 @@ const STAGE_SEP_VEL: f32 = 10.0;
 // ── Game constants ────────────────────────────────────────────────────────────────
 const MAP_VIEW_SCALE: f32 = 25.0;
 
+const FUEL_TANK_SIZE: Vec2 = Vec2::new(18.0, 22.0);
+const EXHAUST_SIZE: Vec2 = Vec2::new(7.0, 22.0);
+const POD_BOTTOM_Y: f32 = -9.0;
+const STAGE_GAP: f32 = 2.0;
+const DEFAULT_FUEL_PER_TANK: f32 = 40.0;
+const DEFAULT_THRUST: f32 = PLANET_SURFACE_GRAVITY * 1.3;
+
 // ── Components ────────────────────────────────────────────────────────────────
 
 #[derive(Component, Default)]
@@ -82,6 +89,7 @@ struct RocketStage;
 #[derive(Component)]
 struct FuelTank {
     fuel: f32,
+    capacity: f32,
 }
 
 #[derive(Component)]
@@ -102,6 +110,17 @@ enum HudLabel {
 }
 #[derive(Component)]
 struct HudFps;
+
+// ── Editor components ─────────────────────────────────────────────────────────
+
+#[derive(Component)]
+struct EditorRoot;
+
+#[derive(Component)]
+struct StageButton(Entity);
+
+#[derive(Component)]
+struct AddStageButton;
 
 // ── Resources ─────────────────────────────────────────────────────────────────
 
@@ -129,14 +148,17 @@ fn main() {
         }))
         .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.08)))
         .insert_resource(MapView::default())
-        .add_systems(Startup, setup)
+        .add_systems(Startup, (setup, apply_deferred, relayout_rocket).chain())
         .add_systems(
             Update,
             (
                 handle_input,
+                handle_editor_input,
                 update_bodies,
                 physics_step,
                 check_surface_contact,
+                relayout_rocket,
+                rebuild_editor_ui,
                 update_trajectory,
                 update_exhaust,
                 follow_camera,
@@ -150,87 +172,63 @@ fn main() {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-/// Spawn two default stages and return (stage1_entity, stage2_entity).
-/// Stage 1 (bottom): large tank + high-thrust engine + decoupler.
-/// Stage 2 (top):    small tank + efficient engine.
-fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
-    let fuel_tank_size = Vec2::new(18.0, 22.0);
+/// Build a single rocket stage with `fuel_count` tanks, an engine, optional
+/// decoupler, and an exhaust flame. Transforms start at default — call
+/// `relayout_rocket` to position everything correctly.
+fn build_stage(
+    commands: &mut Commands,
+    fuel_count: u32,
+    fuel_per_tank: f32,
+    thrust: f32,
+    has_decoupler: bool,
+) -> Entity {
     let fuel_tank_sprite = Sprite {
         color: Color::srgba(1.0, 1.0, 1.0, 1.0),
-        custom_size: Some(fuel_tank_size),
+        custom_size: Some(FUEL_TANK_SIZE),
         ..default()
     };
-
     let exhaust_sprite = Sprite {
         color: Color::srgba(1.0, 0.55, 0.05, 0.0),
-        custom_size: Some(Vec2::new(7.0, 22.0)),
+        custom_size: Some(EXHAUST_SIZE),
         ..default()
     };
 
-    let stage1 = commands
-        .spawn((
-            RocketStage,
-            Transform::from_xyz(0., -10., 0.),
-            Visibility::default(),
-        ))
-        .with_children(|p| {
-            p.spawn((
-                fuel_tank_sprite.clone(),
-                Transform::from_xyz(0., -44., 0.),
-                FuelTank {
-                    fuel: 80.0,
-                },
-            ));
-            p.spawn(Engine {
-                thrust: PLANET_SURFACE_GRAVITY * 1.5,
-            });
-            p.spawn(Decoupler);
-            p.spawn((
-                exhaust_sprite.clone(),
-                Transform::from_xyz(0., -58., -0.1),
-                Exhaust,
-            ));
-        })
-        .id();
-
-    let stage2 = commands
+    commands
         .spawn((RocketStage, Transform::default(), Visibility::default()))
         .with_children(|p| {
-            p.spawn((
-                fuel_tank_sprite.clone(),
-                Transform::from_xyz(0., -26., 0.),
-                FuelTank {
-                    fuel: 40.0,
-                },
-            ));
-            p.spawn(Engine {
-                thrust: PLANET_SURFACE_GRAVITY * 1.3,
-            });
-            p.spawn((
-                exhaust_sprite.clone(),
-                Transform::from_xyz(0., -40., -0.1),
-                Exhaust,
-            ));
+            for _ in 0..fuel_count {
+                p.spawn((
+                    fuel_tank_sprite.clone(),
+                    Transform::default(),
+                    FuelTank {
+                        fuel: fuel_per_tank,
+                        capacity: fuel_per_tank,
+                    },
+                ));
+            }
+            p.spawn(Engine { thrust });
+            if has_decoupler {
+                p.spawn(Decoupler);
+            }
+            p.spawn((exhaust_sprite.clone(), Transform::default(), Exhaust));
         })
-        .id();
+        .id()
+}
 
-    // Rocket body (triangle; nose = top when angle == 0)
-    // Stages and exhaust flame are children of this entity.
+/// Spawn the default two-stage rocket.
+fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
+    let stage1 = build_stage(commands, 1, 80.0, PLANET_SURFACE_GRAVITY * 1.5, true);
+    let stage2 = build_stage(commands, 1, 40.0, PLANET_SURFACE_GRAVITY * 1.3, false);
+
     commands
         .spawn((
             Mesh2d(assets.command_pod_mesh.clone()),
             MeshMaterial2d(assets.default_material.clone()),
             Transform::from_xyz(0., PLANET_RADIUS, 1.0),
             Rocket {
-                velocity: Vec2::ZERO,
-                angle: 0.0,
-                throttle: 0.0,
-                crashed: false,
-                landed: false,
-                landed_body: None,
-                body_offset: Vec2::ZERO,
                 active_stage: Some(stage1),
                 stage_queue: vec![stage2],
+                ..Default::default()
             },
             PlayerRocket,
         ))
@@ -354,6 +352,7 @@ fn setup(
             ..default()
         },
         HudLabel::Fuel,
+        Interaction::default(),
     ));
     commands.spawn((
         Text::new(""),
@@ -892,28 +891,33 @@ fn update_hud(
     };
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);
     let speed = rocket.velocity.length();
-    let stage_fuel: f32 = rocket
+    // let 
+    let (stage_fuel, stage_capacity): (f32, f32) = rocket
         .active_stage
         .and_then(|se| stage_q.get(se).ok())
         .map(|children| {
             children
                 .iter()
                 .filter_map(|&c| tank_q.get(c).ok())
-                .map(|t| t.fuel)
-                .sum()
+                .fold((0.0, 0.0), |(f, cap), t| (f + t.fuel, cap + t.capacity))
         })
-        .unwrap_or(0.0);
+        .unwrap_or((0.0, 1.0));
 
     for (label, mut text) in &mut hud_q {
         *text = Text::new(match label {
             HudLabel::Alt => format!("ALT  {:>8.0} m", alt),
             HudLabel::Vel => format!("VEL  {:>8.1} m/s", speed),
-            HudLabel::Fuel => format!("FUEL {:>8.1}", stage_fuel),
+            HudLabel::Fuel => {
+                const W: usize = 10;
+                let filled = ((stage_fuel / stage_capacity) * W as f32).round() as usize;
+                let filled = filled.min(W);
+                format!("FUEL [{}{}]", "=".repeat(filled), " ".repeat(W - filled))
+            }
             HudLabel::Status => {
                 if rocket.crashed {
                     "CRASHED  –  press R to reset".to_string()
                 } else if rocket.landed {
-                    "LANDED  –  W/↑ to launch".to_string()
+                    "LANDED  –  W/↑ to launch\nfoobar".to_string()
                 } else if rocket.active_stage.is_some() && stage_fuel <= 0.0 {
                     "OUT OF FUEL  –  SPACE to stage".to_string()
                 } else {
@@ -921,5 +925,290 @@ fn update_hud(
                 }
             }
         });
+    }
+}
+
+fn on_fuel_clicked(
+    q: Query<&Interaction, (Changed<Interaction>, With<HudLabel>)>,
+) {
+    for interaction in &q {
+        if *interaction == Interaction::Pressed {
+            // handle click
+        }
+    }
+}
+
+// ── Rocket layout ─────────────────────────────────────────────────────────────
+
+/// Reposition all stages and their children so they stack neatly under the pod.
+fn relayout_rocket(
+    rocket_q: Query<&Rocket, With<PlayerRocket>>,
+    stage_q: Query<&Children, With<RocketStage>>,
+    tank_check: Query<(), With<FuelTank>>,
+    exhaust_check: Query<(), With<Exhaust>>,
+    mut transforms: Query<&mut Transform>,
+) {
+    let Ok(rocket) = rocket_q.get_single() else {
+        return;
+    };
+
+    // Walk stages top-to-bottom (stage_queue reversed, then active_stage).
+    let all_stages: Vec<Entity> = rocket
+        .stage_queue
+        .iter()
+        .copied()
+        .rev()
+        .chain(rocket.active_stage)
+        .collect();
+
+    let mut cursor_y = POD_BOTTOM_Y;
+
+    for stage_entity in all_stages {
+        let Ok(children) = stage_q.get(stage_entity) else {
+            continue;
+        };
+        let tank_count = children
+            .iter()
+            .filter(|&c| tank_check.get(*c).is_ok())
+            .count();
+
+        cursor_y -= STAGE_GAP;
+
+        if let Ok(mut tf) = transforms.get_mut(stage_entity) {
+            tf.translation.y = cursor_y;
+        }
+
+        let mut tank_i = 0usize;
+        for &child in children.iter() {
+            if tank_check.get(child).is_ok() {
+                if let Ok(mut tf) = transforms.get_mut(child) {
+                    tf.translation.y =
+                        -(FUEL_TANK_SIZE.y / 2.0) - tank_i as f32 * FUEL_TANK_SIZE.y;
+                }
+                tank_i += 1;
+            } else if exhaust_check.get(child).is_ok() {
+                if let Ok(mut tf) = transforms.get_mut(child) {
+                    tf.translation.y =
+                        -(tank_count as f32 * FUEL_TANK_SIZE.y) - EXHAUST_SIZE.y / 2.0;
+                    tf.translation.z = -0.1;
+                }
+            }
+        }
+
+        cursor_y -= tank_count as f32 * FUEL_TANK_SIZE.y + EXHAUST_SIZE.y;
+    }
+}
+
+// ── Rocket editor ─────────────────────────────────────────────────────────────
+
+/// Spawn / despawn the editor panel. Rebuilds only when the stage layout changes.
+fn rebuild_editor_ui(
+    mut commands: Commands,
+    rocket_q: Query<&Rocket, With<PlayerRocket>>,
+    body_q: Query<&CelestialBody>,
+    stage_q: Query<&Children, With<RocketStage>>,
+    tank_check: Query<(), With<FuelTank>>,
+    existing_editor: Query<Entity, With<EditorRoot>>,
+    mut prev_state: Local<Option<(bool, Vec<(Entity, usize)>)>>,
+) {
+    let show_editor = rocket_q
+        .get_single()
+        .ok()
+        .map(|rocket| {
+            rocket.landed
+                && rocket
+                    .landed_body
+                    .and_then(|e| body_q.get(e).ok())
+                    .map(|b| b.fixed)
+                    .unwrap_or(false)
+        })
+        .unwrap_or(false);
+
+    // Build snapshot of current stage configuration
+    let current_stages: Vec<(Entity, usize)> = if show_editor {
+        let rocket = rocket_q.get_single().unwrap();
+        rocket
+            .stage_queue
+            .iter()
+            .copied()
+            .rev()
+            .chain(rocket.active_stage)
+            .map(|e| {
+                let tanks = stage_q
+                    .get(e)
+                    .map(|ch| ch.iter().filter(|&c| tank_check.get(*c).is_ok()).count())
+                    .unwrap_or(0);
+                (e, tanks)
+            })
+            .collect()
+    } else {
+        vec![]
+    };
+
+    let current = (show_editor, current_stages);
+    if prev_state.as_ref() == Some(&current) {
+        return;
+    }
+    *prev_state = Some(current.clone());
+
+    // Tear down old editor
+    for e in &existing_editor {
+        commands.entity(e).despawn_recursive();
+    }
+
+    if !show_editor {
+        return;
+    }
+
+    let (_, ref stages) = current;
+
+    commands
+        .spawn((
+            EditorRoot,
+            Node {
+                position_type: PositionType::Absolute,
+                right: Val::Px(12.0),
+                top: Val::Px(80.0),
+                flex_direction: FlexDirection::Column,
+                row_gap: Val::Px(4.0),
+                padding: UiRect::all(Val::Px(8.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.1, 0.1, 0.15, 0.85)),
+        ))
+        .with_children(|root| {
+            // Title
+            root.spawn((
+                Text::new("ROCKET EDITOR"),
+                TextFont {
+                    font_size: 14.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.8, 0.8, 0.8)),
+            ));
+
+            // One button per stage (top-to-bottom)
+            for (i, &(stage_entity, tank_count)) in stages.iter().enumerate() {
+                root.spawn((
+                    Text::new(format!("Stage {} [{} tanks]", i + 1, tank_count)),
+                    TextFont {
+                        font_size: 16.0,
+                        ..default()
+                    },
+                    TextColor(Color::srgb(0.9, 0.9, 0.5)),
+                    Node {
+                        padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+                        min_width: Val::Px(170.0),
+                        ..default()
+                    },
+                    BackgroundColor(Color::srgba(0.2, 0.2, 0.3, 0.9)),
+                    Interaction::default(),
+                    StageButton(stage_entity),
+                ));
+            }
+
+            // "Add stage" button
+            root.spawn((
+                Text::new("+ Add Stage"),
+                TextFont {
+                    font_size: 16.0,
+                    ..default()
+                },
+                TextColor(Color::srgb(0.5, 1.0, 0.5)),
+                Node {
+                    padding: UiRect::axes(Val::Px(12.0), Val::Px(6.0)),
+                    min_width: Val::Px(170.0),
+                    ..default()
+                },
+                BackgroundColor(Color::srgba(0.15, 0.25, 0.15, 0.9)),
+                Interaction::default(),
+                AddStageButton,
+            ));
+        });
+}
+
+/// Process left-click (add tank) and right-click (remove tank / stage) on
+/// editor buttons, plus the "add stage" button.
+fn handle_editor_input(
+    mut commands: Commands,
+    mouse: Res<ButtonInput<MouseButton>>,
+    mut rocket_q: Query<(Entity, &mut Rocket), With<PlayerRocket>>,
+    stage_q: Query<&Children, With<RocketStage>>,
+    tank_check: Query<(), With<FuelTank>>,
+    stage_buttons: Query<(&Interaction, &StageButton)>,
+    add_button: Query<&Interaction, With<AddStageButton>>,
+) {
+    let Ok((rocket_entity, mut rocket)) = rocket_q.get_single_mut() else {
+        return;
+    };
+
+    // Stage buttons — left click = add tank, right click = remove tank/stage
+    for (interaction, stage_btn) in &stage_buttons {
+        let stage_entity = stage_btn.0;
+
+        // Left click: add a fuel tank
+        if *interaction == Interaction::Pressed && mouse.just_pressed(MouseButton::Left) {
+            let fuel_tank_sprite = Sprite {
+                color: Color::srgba(1.0, 1.0, 1.0, 1.0),
+                custom_size: Some(FUEL_TANK_SIZE),
+                ..default()
+            };
+            let tank = commands
+                .spawn((
+                    fuel_tank_sprite,
+                    Transform::default(),
+                    FuelTank {
+                        fuel: DEFAULT_FUEL_PER_TANK,
+                        capacity: DEFAULT_FUEL_PER_TANK,
+                    },
+                ))
+                .id();
+            commands.entity(stage_entity).add_child(tank);
+        }
+
+        // Right click: remove a fuel tank, or remove the whole stage if empty
+        if *interaction == Interaction::Hovered && mouse.just_pressed(MouseButton::Right) {
+            let Ok(children) = stage_q.get(stage_entity) else {
+                continue;
+            };
+            let mut tank_to_remove = None;
+            for &c in children.iter() {
+                if tank_check.get(c).is_ok() {
+                    tank_to_remove = Some(c);
+                    break;
+                }
+            }
+
+            if let Some(tank) = tank_to_remove {
+                commands.entity(tank).despawn_recursive();
+            } else {
+                // No tanks left — remove the entire stage
+                if rocket.active_stage == Some(stage_entity) {
+                    rocket.active_stage = if !rocket.stage_queue.is_empty() {
+                        Some(rocket.stage_queue.remove(0))
+                    } else {
+                        None
+                    };
+                } else {
+                    rocket.stage_queue.retain(|&e| e != stage_entity);
+                }
+                commands.entity(stage_entity).despawn_recursive();
+            }
+        }
+    }
+
+    // "Add stage" button
+    for interaction in &add_button {
+        if *interaction == Interaction::Pressed && mouse.just_pressed(MouseButton::Left) {
+            let new_stage =
+                build_stage(&mut commands, 1, DEFAULT_FUEL_PER_TANK, DEFAULT_THRUST, true);
+            commands.entity(rocket_entity).add_child(new_stage);
+
+            // New stage goes to the bottom (fires first = active_stage)
+            if let Some(old_active) = rocket.active_stage.take() {
+                rocket.stage_queue.insert(0, old_active);
+            }
+            rocket.active_stage = Some(new_stage);
+        }
     }
 }
