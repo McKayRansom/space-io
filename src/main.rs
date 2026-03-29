@@ -41,6 +41,12 @@ const STAGE_GAP: f32 = 2.0;
 const DEFAULT_FUEL_PER_TANK: f32 = 40.0;
 const DEFAULT_THRUST: f32 = PLANET_SURFACE_GRAVITY * 1.3;
 
+// ── Mass constants (arbitrary units, just need consistent ratios) ─────────────
+const POD_MASS: f32 = 5.0;
+const ENGINE_MASS: f32 = 3.0;
+const FUEL_TANK_DRY_MASS: f32 = 1.0; // empty tank shell
+const FUEL_DENSITY: f32 = 0.5;        // mass per unit of fuel
+
 // ── Components ────────────────────────────────────────────────────────────────
 
 #[derive(Component, Default)]
@@ -81,6 +87,9 @@ impl CelestialBody {
 #[derive(Component)]
 struct Exhaust;
 
+#[derive(Component)]
+struct CommandPod;
+
 // ── Stage components ───────────────────────────────────────────────────────────
 
 #[derive(Component)]
@@ -96,9 +105,6 @@ struct FuelTank {
 struct Engine {
     thrust: f32, // units/s²
 }
-
-#[derive(Component)]
-struct Decoupler; // marks a stage as separable from the one above
 
 // HUD label — one enum covers all telemetry rows; add a variant to add a new row
 #[derive(Component, PartialEq, Eq)]
@@ -180,7 +186,6 @@ fn build_stage(
     fuel_count: u32,
     fuel_per_tank: f32,
     thrust: f32,
-    has_decoupler: bool,
 ) -> Entity {
     let fuel_tank_sprite = Sprite {
         color: Color::srgba(1.0, 1.0, 1.0, 1.0),
@@ -207,9 +212,6 @@ fn build_stage(
                 ));
             }
             p.spawn(Engine { thrust });
-            if has_decoupler {
-                p.spawn(Decoupler);
-            }
             p.spawn((exhaust_sprite.clone(), Transform::default(), Exhaust));
         })
         .id()
@@ -217,14 +219,22 @@ fn build_stage(
 
 /// Spawn the default two-stage rocket.
 fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
-    let stage1 = build_stage(commands, 1, 80.0, PLANET_SURFACE_GRAVITY * 1.5, true);
-    let stage2 = build_stage(commands, 1, 40.0, PLANET_SURFACE_GRAVITY * 1.3, false);
+    let stage1 = build_stage(commands, 1, 80.0, PLANET_SURFACE_GRAVITY * 1.5);
+    let stage2 = build_stage(commands, 1, 40.0, PLANET_SURFACE_GRAVITY * 1.3,);
 
-    commands
+    let pod = commands
         .spawn((
             Mesh2d(assets.command_pod_mesh.clone()),
             MeshMaterial2d(assets.default_material.clone()),
+            Transform::default(),
+            CommandPod,
+        ))
+        .id();
+
+    commands
+        .spawn((
             Transform::from_xyz(0., PLANET_RADIUS, 1.0),
+            Visibility::default(),
             Rocket {
                 active_stage: Some(stage1),
                 stage_queue: vec![stage2],
@@ -232,6 +242,7 @@ fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
             },
             PlayerRocket,
         ))
+        .add_child(pod)
         .add_child(stage1)
         .add_child(stage2);
 }
@@ -928,24 +939,17 @@ fn update_hud(
     }
 }
 
-fn on_fuel_clicked(
-    q: Query<&Interaction, (Changed<Interaction>, With<HudLabel>)>,
-) {
-    for interaction in &q {
-        if *interaction == Interaction::Pressed {
-            // handle click
-        }
-    }
-}
-
 // ── Rocket layout ─────────────────────────────────────────────────────────────
 
-/// Reposition all stages and their children so they stack neatly under the pod.
+/// Reposition all stages and their children so they stack neatly under the pod,
+/// then shift everything so the entity origin sits at the center of mass.
 fn relayout_rocket(
     rocket_q: Query<&Rocket, With<PlayerRocket>>,
     stage_q: Query<&Children, With<RocketStage>>,
-    tank_check: Query<(), With<FuelTank>>,
+    tank_q: Query<&FuelTank>,
+    engine_check: Query<(), With<Engine>>,
     exhaust_check: Query<(), With<Exhaust>>,
+    pod_q: Query<Entity, With<CommandPod>>,
     mut transforms: Query<&mut Transform>,
 ) {
     let Ok(rocket) = rocket_q.get_single() else {
@@ -961,41 +965,120 @@ fn relayout_rocket(
         .chain(rocket.active_stage)
         .collect();
 
+    // ── Pass 1: layout positions relative to the pod centre (y=0) ─────────
+
+    // Pod centre sits at local y=0 initially; the triangle spans -9..+10
+    let pod_y: f32 = 0.0;
+
+    // Accumulate (world_y, mass) pairs for CoM calculation
+    let mut mass_items: Vec<(f32, f32)> = vec![(pod_y, POD_MASS)];
+
     let mut cursor_y = POD_BOTTOM_Y;
 
-    for stage_entity in all_stages {
-        let Ok(children) = stage_q.get(stage_entity) else {
+    // For each stage, record the absolute y of each part (relative to rocket entity)
+    struct StageLayout {
+        stage_entity: Entity,
+        stage_y: f32,
+        tank_ys: Vec<(Entity, f32, f32)>, // (entity, local_y_in_stage, mass)
+        exhaust_y: f32,
+    }
+
+    let mut layouts: Vec<StageLayout> = Vec::new();
+
+    for stage_entity in &all_stages {
+        let Ok(children) = stage_q.get(*stage_entity) else {
             continue;
         };
-        let tank_count = children
-            .iter()
-            .filter(|&c| tank_check.get(*c).is_ok())
-            .count();
+
+        let mut tanks: Vec<(Entity, f32)> = Vec::new();
+        let mut engines: Vec<Entity> = Vec::new();
+
+        for &child in children.iter() {
+            if tank_q.get(child).is_ok() {
+                tanks.push((child, 0.0));
+            } else if engine_check.get(child).is_ok() {
+                engines.push(child);
+            }
+        }
+        let tank_count = tanks.len();
 
         cursor_y -= STAGE_GAP;
+        let stage_y = cursor_y;
 
-        if let Ok(mut tf) = transforms.get_mut(stage_entity) {
-            tf.translation.y = cursor_y;
+        // Position tanks within the stage (local coords)
+        for (i, (entity, ref mut local_y)) in tanks.iter_mut().enumerate() {
+            *local_y = -(FUEL_TANK_SIZE.y / 2.0) - i as f32 * FUEL_TANK_SIZE.y;
+
+            // Absolute y for CoM: stage_y + local_y
+            let abs_y = stage_y + *local_y;
+            let tank = tank_q.get(*entity).unwrap();
+            let tank_mass = FUEL_TANK_DRY_MASS + tank.fuel * FUEL_DENSITY;
+            mass_items.push((abs_y, tank_mass));
         }
 
-        let mut tank_i = 0usize;
-        for &child in children.iter() {
-            if tank_check.get(child).is_ok() {
-                if let Ok(mut tf) = transforms.get_mut(child) {
-                    tf.translation.y =
-                        -(FUEL_TANK_SIZE.y / 2.0) - tank_i as f32 * FUEL_TANK_SIZE.y;
-                }
-                tank_i += 1;
-            } else if exhaust_check.get(child).is_ok() {
-                if let Ok(mut tf) = transforms.get_mut(child) {
-                    tf.translation.y =
-                        -(tank_count as f32 * FUEL_TANK_SIZE.y) - EXHAUST_SIZE.y / 2.0;
-                    tf.translation.z = -0.1;
-                }
+        let exhaust_y = -(tank_count as f32 * FUEL_TANK_SIZE.y) - EXHAUST_SIZE.y / 2.0;
+
+        // Engine mass — positioned roughly at exhaust location
+        for &_e in &engines {
+            mass_items.push((stage_y + exhaust_y, ENGINE_MASS));
+        }
+
+        layouts.push(StageLayout {
+            stage_entity: *stage_entity,
+            stage_y,
+            tank_ys: tanks.into_iter().map(|(e, ly)| {
+                let tank = tank_q.get(e).unwrap();
+                (e, ly, FUEL_TANK_DRY_MASS + tank.fuel * FUEL_DENSITY)
+            }).collect(),
+            exhaust_y,
+        });
+
+        cursor_y -= tank_count as f32 * FUEL_TANK_SIZE.y + EXHAUST_SIZE.y;
+    }
+
+    // ── Pass 2: compute centre of mass ────────────────────────────────────
+
+    let total_mass: f32 = mass_items.iter().map(|(_, m)| m).sum();
+    let com_y = if total_mass > 0.0 {
+        mass_items.iter().map(|(y, m)| y * m).sum::<f32>() / total_mass
+    } else {
+        0.0
+    };
+
+    // ── Pass 3: apply transforms, shifted by -com_y ───────────────────────
+
+    // Pod
+    if let Ok(pod_entity) = pod_q.get_single() {
+        if let Ok(mut tf) = transforms.get_mut(pod_entity) {
+            tf.translation.y = pod_y - com_y;
+        }
+    }
+
+    // Stages and their children
+    for layout in &layouts {
+        let shifted_stage_y = layout.stage_y - com_y;
+
+        if let Ok(mut tf) = transforms.get_mut(layout.stage_entity) {
+            tf.translation.y = shifted_stage_y;
+        }
+
+        for &(tank_entity, local_y, _) in &layout.tank_ys {
+            if let Ok(mut tf) = transforms.get_mut(tank_entity) {
+                tf.translation.y = local_y;
             }
         }
 
-        cursor_y -= tank_count as f32 * FUEL_TANK_SIZE.y + EXHAUST_SIZE.y;
+        // Exhausts and engines keep their local y within the stage
+        if let Ok(children) = stage_q.get(layout.stage_entity) {
+            for &child in children.iter() {
+                if exhaust_check.get(child).is_ok() {
+                    if let Ok(mut tf) = transforms.get_mut(child) {
+                        tf.translation.y = layout.exhaust_y;
+                        tf.translation.z = -0.1;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1201,7 +1284,7 @@ fn handle_editor_input(
     for interaction in &add_button {
         if *interaction == Interaction::Pressed && mouse.just_pressed(MouseButton::Left) {
             let new_stage =
-                build_stage(&mut commands, 1, DEFAULT_FUEL_PER_TANK, DEFAULT_THRUST, true);
+                build_stage(&mut commands, 1, DEFAULT_FUEL_PER_TANK, DEFAULT_THRUST);
             commands.entity(rocket_entity).add_child(new_stage);
 
             // New stage goes to the bottom (fires first = active_stage)
