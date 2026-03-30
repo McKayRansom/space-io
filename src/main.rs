@@ -9,6 +9,7 @@
 
 use std::f32::consts::FRAC_PI_2;
 
+use avian2d::{prelude::*, sync::ancestor_marker::AncestorMarker};
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
@@ -16,7 +17,7 @@ use bevy::{
 use rand::Rng;
 
 // ── Physics constants  ─────────────────────────
-const G: f32 = 200.0;
+const G: f32 = 20.0;
 const PLANET_MASS: f32 = 5.0e6; // G·M = 2·10⁷
 const PLANET_RADIUS: f32 = 3400.0;
 const PLANET_SURFACE_GRAVITY: f32 = G * PLANET_MASS / (PLANET_RADIUS * PLANET_RADIUS);
@@ -59,9 +60,8 @@ const SPRITE_EXHUAST_END: usize = 50;
 
 #[derive(Component, Default)]
 struct Rocket {
-    velocity: Vec2,
-    angle: f32,    // radians; 0 = nose pointing +Y
     throttle: f32, // 0 or 1
+    torque: f32,   // -1 or 0 or 1 rotation
     crashed: bool,
     landed: bool,
     landed_body: Option<Entity>, // which body we're on (None when flying)
@@ -69,6 +69,13 @@ struct Rocket {
     active_stage: Option<Entity>, // currently burning stage
     stage_queue: Vec<Entity>,    // remaining stages, front = next to activate
     total_mass: f32,
+}
+
+/// Build a Quat representing a rocket pointing along `direction` (a unit Vec2).
+/// The sprite sheet draws the rocket pointing right (+X), so we rotate it to face
+/// the desired direction by computing the CCW angle from +X.
+fn quat_from_dir(direction: Vec2) -> Quat {
+    Quat::from_rotation_z(direction.to_angle() - FRAC_PI_2)
 }
 
 #[derive(Component)]
@@ -153,6 +160,11 @@ fn main() {
     App::new()
         .add_plugins(FrameTimeDiagnosticsPlugin)
         .add_plugins(
+            PhysicsPlugins::default(), // Enables debug rendering
+        )
+        .add_plugins(PhysicsDebugPlugin::default())
+        .insert_resource(Gravity(Vec2::ZERO)) // we apply custom N-body gravity manually
+        .add_plugins(
             DefaultPlugins
                 .set(WindowPlugin {
                     primary_window: Some(Window {
@@ -173,19 +185,22 @@ fn main() {
                 handle_input,
                 handle_editor_input,
                 update_bodies,
-                physics_step,
-                check_surface_contact,
-                relayout_rocket,
+                // physics_step,
+                // handle_planet_collision,
+                // check_surface_contact,
+                // relayout_rocket,
                 rebuild_editor_ui,
                 update_trajectory,
                 update_exhaust,
                 animate_sprite,
-                follow_camera,
+                // follow_camera,
                 update_hud,
                 update_fps,
             )
                 .chain(),
         )
+        .add_systems(FixedUpdate, (physics_step, follow_camera))
+        // .add_systems(PostUpdate, follow_camera.before(TransformSystem::TransformPropagate))
         .run();
 }
 
@@ -212,12 +227,16 @@ fn build_stage(
                         fuel: fuel_per_tank,
                         capacity: fuel_per_tank,
                     },
+                    Collider::rectangle(12., 5.0),
+                    Mass(10.0),
                 ));
             }
             p.spawn((
                 rocket_assets.engine_sprite.clone(),
                 Transform::default(),
                 Engine { thrust },
+                Collider::rectangle(12., 2.0),
+                Mass(10.0),
             ))
             .with_child((
                 rocket_assets.exhaust.clone(),
@@ -241,13 +260,15 @@ fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
         .spawn((
             assets.command_pod_sprite.clone(),
             Transform::default(),
+            Collider::rectangle(12., 2.0),
+            Mass(10.0),
             CommandPod,
         ))
         .id();
 
     commands
         .spawn((
-            Transform::from_xyz(0., PLANET_RADIUS, 1.0),
+            Transform::from_xyz(0., PLANET_RADIUS * 1.05, 1.0),
             Visibility::default(),
             Rocket {
                 active_stage: Some(stage1),
@@ -255,6 +276,20 @@ fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
                 ..Default::default()
             },
             PlayerRocket,
+            // avian2d physics
+            RigidBody::Dynamic,
+            // Collider::rectangle(12., 32.0),
+            // Collider::circle(40.0),
+            ExternalForce::new(Vec2::ZERO).with_persistence(false),
+            ExternalTorque::new(0.0).with_persistence(false),
+            Restitution::new(0.4),
+            Friction::new(0.9),
+            // TransformInterpolation,
+            // Sensor means we detect collisions but avian doesn't apply forces;
+            // our game logic (handle_planet_collision) decides land vs crash.
+            // Sensor,
+            // Rotation is controlled by player input; prevent avian from touching it.
+            // LockedAxes::ROTATION_LOCKED,
         ))
         .add_child(pod)
         .add_child(stage1)
@@ -332,6 +367,9 @@ fn setup(
             velocity: Vec2::ZERO,
             fixed: true,
         },
+        // avian2d: static body with a circular collider for rocket landing detection
+        RigidBody::Static,
+        Collider::circle(PLANET_RADIUS),
     ));
 
     // Atmosphere glow ring (visual only, no physics)
@@ -492,14 +530,23 @@ fn setup(
 
 fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
-    time: Res<Time>,
     assets: Res<RocketAssets>,
     mut commands: Commands,
-    mut q: Query<(Entity, &mut Transform, &mut Rocket), With<PlayerRocket>>,
+    mut q: Query<
+        (
+            Entity,
+            &mut Transform,
+            &mut Rocket,
+            &mut Position,
+            &mut LinearVelocity,
+        ),
+        With<PlayerRocket>,
+    >,
     mut map_view: ResMut<MapView>,
     bodies: Query<(&Transform, &CelestialBody), Without<Rocket>>,
 ) {
-    let Ok((rocket_entity, mut tf, mut rocket)) = q.get_single_mut() else {
+    let Ok((rocket_entity, mut tf, mut rocket, mut avian_pos, mut lin_vel)) = q.get_single_mut()
+    else {
         return;
     };
 
@@ -524,16 +571,27 @@ fn handle_input(
     if keys.just_pressed(KeyCode::Space) {
         // Note: This does not change the transform, not sure if that is an issue or not, now the stage's origin may be in a weird place
         if let Some(current) = rocket.active_stage.take() {
+            let nose = tf.local_y().truncate();
+            let sep_vel = **lin_vel - STAGE_SEP_VEL * nose;
             commands
                 .spawn((
                     Visibility::default(),
                     tf.clone(),
                     Rocket {
-                        velocity: rocket.velocity - STAGE_SEP_VEL * Vec2::from_angle(rocket.angle),
-                        angle: rocket.angle,
                         active_stage: Some(current),
                         ..Default::default()
                     },
+                    // give the separated stage its own physics body
+                    RigidBody::Dynamic,
+                    LinearVelocity(sep_vel),
+                    // Avian's update_collider_parents only processes entities that have
+                    // both RigidBody and AncestorMarker<ColliderMarker>. When we reparent
+                    // the stage subtree here, the OnAdd<ColliderMarker> observer that
+                    // normally adds this marker walks UP the chain but stops at the stage
+                    // entity (which already has the marker), so it never reaches this new
+                    // root. We insert it manually so the next FixedPostUpdate correctly
+                    // re-registers all descendant colliders to this rigid body.
+                    AncestorMarker::<ColliderMarker>::default(),
                 ))
                 .add_child(current);
         }
@@ -545,16 +603,14 @@ fn handle_input(
         return;
     }
 
-    let dt = time.delta_secs();
-
     // Rotation is always allowed — player aims before launching
     if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
-        rocket.angle += ROT_FORCE * dt / rocket.total_mass;
+        rocket.torque = 1.0;
+    } else if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
+        rocket.torque = -1.0;
+    } else {
+        rocket.torque = 0.0;
     }
-    if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
-        rocket.angle -= ROT_FORCE * dt / rocket.total_mass;
-    }
-    tf.rotation = Quat::from_rotation_z(rocket.angle - FRAC_PI_2);
 
     let thrusting = keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW);
 
@@ -570,19 +626,21 @@ fn handle_input(
     // debugging tools
     if keys.just_pressed(KeyCode::Digit1) {
         // go back to planet
-        *tf = Transform::from_xyz(0., PLANET_RADIUS, 1.0);
-        rocket.velocity = Vec2::ZERO;
-        rocket.angle = 0.0;
+        let new_pos = Vec2::new(0., PLANET_RADIUS);
+        *tf = Transform::from_xyz(new_pos.x, new_pos.y, 1.0);
+        avian_pos.0 = new_pos;
+        *lin_vel = LinearVelocity(Vec2::ZERO);
         rocket.landed = false;
         rocket.crashed = false;
     }
     if keys.just_pressed(KeyCode::Digit2) {
         // go to orbit
         let r0 = PLANET_RADIUS * 1.1;
-        let orbital_v = (G * PLANET_MASS / r0).sqrt(); // ≈ 267 units/s
-        *tf = Transform::from_xyz(0., r0, 1.0);
-        rocket.velocity = Vec2::new(orbital_v, 0.0);
-        rocket.angle = 0.0;
+        let orbital_v = (G * PLANET_MASS / r0).sqrt();
+        let new_pos = Vec2::new(0., r0);
+        *tf = Transform::from_xyz(new_pos.x, new_pos.y, 1.0);
+        avian_pos.0 = new_pos;
+        lin_vel.0 = Vec2::new(orbital_v, 0.0);
         rocket.landed = false;
         rocket.crashed = false;
     }
@@ -590,10 +648,11 @@ fn handle_input(
         // go to moon orbit
         let (moon_tf, moon) = bodies.iter().find(|body| body.1.fixed == false).unwrap();
         let r0 = MOON_RADIUS * 1.1;
-        let orbital_v = (G * MOON_MASS / r0).sqrt(); // ≈ 267 units/s
-        *tf = Transform::from_xyz(moon_tf.translation.x, moon_tf.translation.y + r0, 1.0);
-        rocket.velocity = moon.velocity + Vec2::new(orbital_v, 0.0);
-        rocket.angle = 0.0;
+        let orbital_v = (G * MOON_MASS / r0).sqrt();
+        let new_pos = Vec2::new(moon_tf.translation.x, moon_tf.translation.y + r0);
+        *tf = Transform::from_xyz(new_pos.x, new_pos.y, 1.0);
+        avian_pos.0 = new_pos;
+        lin_vel.0 = moon.velocity + Vec2::new(orbital_v, 0.0);
         rocket.landed = false;
         rocket.crashed = false;
     }
@@ -638,30 +697,39 @@ fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mu
 fn physics_step(
     time: Res<Time>,
     bodies: Query<(Entity, &Transform, &CelestialBody)>,
-    mut rocket_q: Query<(&mut Transform, &mut Rocket), Without<CelestialBody>>,
+    mut rocket_q: Query<
+        (
+            &Transform,
+            &mut Rocket,
+            &mut ExternalForce,
+            &mut ExternalTorque,
+        ),
+        Without<CelestialBody>,
+    >,
     stage_q: Query<&Children, With<RocketStage>>,
     engine_q: Query<&Engine>,
     mut tank_q: Query<&mut FuelTank>,
 ) {
-    for (mut tf, mut rocket) in rocket_q.iter_mut() {
+    for (tf, rocket, mut ext_force, mut ext_torque) in rocket_q.iter_mut() {
         if rocket.crashed {
             continue;
         }
 
-        // While landed, ride the body we're on (fixed bodies keep us stationary)
-        if rocket.landed {
-            if let Some(e) = rocket.landed_body {
-                if let Ok((_, body_tf, body)) = bodies.get(e) {
-                    tf.translation =
-                        (body_tf.translation.truncate() + rocket.body_offset).extend(1.0);
-                    rocket.velocity = body.velocity;
-                }
-            }
-            continue;
-        }
+        // While landed, stay stationary (or match body velocity for moving bodies)
+        // if rocket.landed {
+        //     if let Some(e) = rocket.landed_body {
+        //         if let Ok((_, _body_tf, body)) = bodies.get(e) {
+        //             rocket.velocity = body.velocity;
+        //             lin_vel.0 = body.velocity;
+        //         }
+        //     }
+        //     continue;
+        // }
 
         let dt = time.delta_secs();
         let pos = tf.translation.truncate();
+
+        let mut force: Vec2 = Vec2::ZERO;
 
         // Gravity from every celestial body
         for (_, body_tf, body) in bodies.iter() {
@@ -671,7 +739,7 @@ fn physics_step(
                 continue;
             }
             let dist = dist_sq.sqrt();
-            rocket.velocity += (to_body / dist) * (G * body.mass / dist_sq) * dt;
+            force += (to_body / dist) * (G * body.mass / dist_sq);
         }
 
         // Thrust — read engine thrust and consume fuel from the active stage's children
@@ -696,8 +764,8 @@ fn physics_step(
                     .sum();
 
                 if total_thrust > 0.0 && total_fuel > 0.0 {
-                    let nose = Vec2::from_angle(rocket.angle);
-                    rocket.velocity += nose * total_thrust * dt;
+                    let nose = tf.local_y().truncate();
+                    force += nose * total_thrust;
 
                     // Drain each tank equally
                     for &child in &children {
@@ -709,9 +777,12 @@ fn physics_step(
             }
         }
 
-        let v = rocket.velocity;
-        tf.translation.x += v.x * dt;
-        tf.translation.y += v.y * dt;
+        ext_force.set_force(force * 100.0);
+
+        let torque: f32 = rocket.torque * 1000.0;
+
+        ext_torque.set_torque(torque);
+        // log::dbg
     }
 }
 
@@ -809,7 +880,7 @@ fn draw_orbit(gizmos: &mut Gizmos, focus: Vec2, orbit: OrbitalParameters) {
 }
 
 fn update_trajectory(
-    rocket_q: Query<(&Transform, &Rocket), With<PlayerRocket>>,
+    rocket_q: Query<(&Transform, &LinearVelocity, &Rocket), With<PlayerRocket>>,
     bodies: Query<(&Transform, &CelestialBody)>,
     mut gizmos: Gizmos,
 ) {
@@ -832,7 +903,7 @@ fn update_trajectory(
         }
     }
 
-    let Ok((rtf, rocket)) = rocket_q.get_single() else {
+    let Ok((rtf, velocity, rocket)) = rocket_q.get_single() else {
         return;
     };
     if rocket.crashed || rocket.landed {
@@ -856,57 +927,130 @@ fn update_trajectory(
     };
 
     let pos = rtf.translation.truncate() - focus; // position relative to orbital focus
-    let vel = rocket.velocity;
+    let vel = velocity;
 
-    if let Some(orbit) = OrbitalParameters::calc(mass, pos, vel) {
+    if let Some(orbit) = OrbitalParameters::calc(mass, pos, **vel) {
         draw_orbit(&mut gizmos, focus, orbit);
     }
 }
 
-fn check_surface_contact(
-    mut rocket_q: Query<(&mut Transform, &mut Rocket), Without<CelestialBody>>,
-    bodies: Query<(Entity, &Transform, &CelestialBody)>,
-) {
-    for (mut rtf, mut rocket) in rocket_q.iter_mut() {
-        if rocket.crashed || rocket.landed {
-            continue;
-        }
+/// Handles rocket collisions with the planet (detected by avian2d).
+/// The planet has a Collider::circle so avian fires CollisionStarted events when
+/// a rocket's circle collider overlaps it. We decide land vs crash here.
+// fn handle_planet_collision(
+//     mut collision_events: EventReader<CollisionStarted>,
+//     planet_q: Query<(Entity, &CelestialBody), With<RigidBody>>,
+//     rocket_check: Query<(), (With<Rocket>, Without<CelestialBody>)>,
+//     mut rocket_q: Query<(&mut Transform, &mut Rocket, &mut LinearVelocity), Without<CelestialBody>>,
+// ) {
+//     for &CollisionStarted(e1, e2) in collision_events.read() {
+//         // Identify which entity is the rocket and which is a celestial body
+//         let (rocket_entity, body_entity) = if rocket_check.contains(e1) && planet_q.contains(e2) {
+//             (e1, e2)
+//         } else if rocket_check.contains(e2) && planet_q.contains(e1) {
+//             (e2, e1)
+//         } else {
+//             continue;
+//         };
 
-        let pos = rtf.translation.truncate();
+//         let Ok((_, body)) = planet_q.get(body_entity) else {
+//             continue;
+//         };
+//         // Only handle fixed bodies here; moving bodies (moon) are handled by
+//         // check_surface_contact below.
+//         if !body.fixed {
+//             continue;
+//         }
 
-        for (entity, body_tf, body) in bodies.iter() {
-            let body_pos = body_tf.translation.truncate();
-            let from_body = pos - body_pos;
-            if from_body.length() > body.radius + 2.0 {
-                continue;
-            }
+//         let Ok((mut rtf, mut rocket, mut lin_vel)) = rocket_q.get_mut(rocket_entity) else {
+//             continue;
+//         };
+//         if rocket.crashed || rocket.landed {
+//             continue;
+//         }
 
-            // Ignore contact if the rocket is already moving away from the surface
-            let rel_vel = rocket.velocity - body.velocity;
-            if rel_vel.dot(from_body.normalize()) > 0.0 {
-                continue;
-            }
+//         let pos = rtf.translation.truncate();
+//         let rel_vel = rocket.velocity - body.velocity; // body.velocity == Vec2::ZERO for fixed
 
-            let rel_speed = rel_vel.length();
-            if rel_speed <= LANDING_MAX_SPEED {
-                let normal = from_body.normalize();
-                rocket.angle = normal.to_angle();
-                rocket.velocity = body.velocity;
-                rocket.throttle = 0.0;
-                rocket.landed = true;
-                rocket.landed_body = Some(entity);
-                rocket.body_offset = normal * body.radius;
-                rtf.translation = (body_pos + rocket.body_offset).extend(1.0);
-                rtf.rotation = Quat::from_rotation_z(rocket.angle - FRAC_PI_2);
-            } else {
-                rocket.crashed = true;
-                rocket.velocity = Vec2::ZERO;
-                rocket.throttle = 0.0;
-            }
-            break; // only one contact at a time
-        }
-    }
-}
+//         // Only trigger if the rocket is moving toward the surface
+//         let from_body = pos.normalize(); // planet is at origin
+//         if rel_vel.dot(from_body) > 0.0 {
+//             continue;
+//         }
+
+//         let rel_speed = rel_vel.length();
+//         if rel_speed <= LANDING_MAX_SPEED {
+//             let normal = from_body;
+//             rocket.velocity = body.velocity;
+//             lin_vel.0 = body.velocity;
+//             rocket.throttle = 0.0;
+//             rocket.landed = true;
+//             rocket.landed_body = Some(body_entity);
+//             rocket.body_offset = normal * body.radius;
+//             let snap = (body.radius * normal).extend(1.0);
+//             rtf.translation = snap;
+//             rtf.rotation = quat_from_dir(normal);
+//         } else {
+//             rocket.crashed = true;
+//             rocket.velocity = Vec2::ZERO;
+//             lin_vel.0 = Vec2::ZERO;
+//             rocket.throttle = 0.0;
+//         }
+//     }
+// }
+
+/// Manual collision check for non-physics bodies (the moon has no avian Collider).
+/// Also acts as a fallback for any rocket that avian hasn't detected yet.
+// fn check_surface_contact(
+//     mut rocket_q: Query<(&mut Transform, &mut Rocket, &mut LinearVelocity), Without<CelestialBody>>,
+//     bodies: Query<(Entity, &Transform, &CelestialBody)>,
+// ) {
+//     for (mut rtf, mut rocket, mut lin_vel) in rocket_q.iter_mut() {
+//         if rocket.crashed || rocket.landed {
+//             continue;
+//         }
+
+//         let pos = rtf.translation.truncate();
+
+//         for (entity, body_tf, body) in bodies.iter() {
+//             // Skip fixed bodies — they're handled by handle_planet_collision via avian events
+//             if body.fixed {
+//                 continue;
+//             }
+
+//             let body_pos = body_tf.translation.truncate();
+//             let from_body = pos - body_pos;
+//             if from_body.length() > body.radius + 2.0 {
+//                 continue;
+//             }
+
+//             // Ignore contact if the rocket is already moving away from the surface
+//             let rel_vel = rocket.velocity - body.velocity;
+//             if rel_vel.dot(from_body.normalize()) > 0.0 {
+//                 continue;
+//             }
+
+//             let rel_speed = rel_vel.length();
+//             if rel_speed <= LANDING_MAX_SPEED {
+//                 let normal = from_body.normalize();
+//                 rocket.velocity = body.velocity;
+//                 lin_vel.0 = body.velocity;
+//                 rocket.throttle = 0.0;
+//                 rocket.landed = true;
+//                 rocket.landed_body = Some(entity);
+//                 rocket.body_offset = normal * body.radius;
+//                 rtf.translation = (body_pos + rocket.body_offset).extend(1.0);
+//                 rtf.rotation = quat_from_dir(normal);
+//             } else {
+//                 rocket.crashed = true;
+//                 rocket.velocity = Vec2::ZERO;
+//                 lin_vel.0 = Vec2::ZERO;
+//                 rocket.throttle = 0.0;
+//             }
+//             break; // only one contact at a time
+//         }
+//     }
+// }
 
 fn update_exhaust(
     rocket_q: Query<&Rocket>,
@@ -977,16 +1121,16 @@ fn follow_camera(
 }
 
 fn update_hud(
-    rocket_q: Query<(&Transform, &Rocket), With<PlayerRocket>>,
+    rocket_q: Query<(&Transform, &LinearVelocity, &Rocket), With<PlayerRocket>>,
     stage_q: Query<&Children, With<RocketStage>>,
     tank_q: Query<&FuelTank>,
     mut hud_q: Query<(&HudLabel, &mut Text)>,
 ) {
-    let Ok((tf, rocket)) = rocket_q.get_single() else {
+    let Ok((tf, velocity, rocket)) = rocket_q.get_single() else {
         return;
     };
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);
-    let speed = rocket.velocity.length();
+    let speed = velocity.length();
     // let
     let (stage_fuel, stage_capacity): (f32, f32) = rocket
         .active_stage

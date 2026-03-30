@@ -6,6 +6,7 @@ edition = "2021"
 [dependencies]
 bevy = "0.15"
 rand = "0.8"
+avian2d = "0.2"
 
 # Faster iteration builds: optimize deps, but keep game code debuggable
 [profile.dev]
