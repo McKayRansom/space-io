@@ -11,7 +11,6 @@ use std::f32::consts::FRAC_PI_2;
 
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
-    log,
     prelude::*,
 };
 use rand::Rng;
@@ -22,7 +21,7 @@ const PLANET_MASS: f32 = 5.0e6; // G·M = 2·10⁷
 const PLANET_RADIUS: f32 = 3400.0;
 const PLANET_SURFACE_GRAVITY: f32 = G * PLANET_MASS / (PLANET_RADIUS * PLANET_RADIUS);
 const FUEL_RATE: f32 = 1.0; // fuel/s at full throttle (per tank)
-const ROT_SPEED: f32 = 1.5; // rad/s
+const ROT_FORCE: f32 = 15.0; // rad/s
 
 const MOON_SURFACE_GRAVITY: f32 = PLANET_SURFACE_GRAVITY / 6.0;
 const MOON_MASS: f32 = MOON_SURFACE_GRAVITY * (MOON_RADIUS * MOON_RADIUS) / G; // G·M_moon = 1·10⁶
@@ -69,6 +68,7 @@ struct Rocket {
     body_offset: Vec2,           // surface-normal offset from that body's center
     active_stage: Option<Entity>, // currently burning stage
     stage_queue: Vec<Entity>,    // remaining stages, front = next to activate
+    total_mass: f32,
 }
 
 #[derive(Component)]
@@ -283,7 +283,6 @@ fn animate_sprite(
                 atlas.index = if atlas.index >= indices.last {
                     indices.first
                 } else {
-                    log::info!("Switching anim index to: {}", atlas.index + 1);
                     atlas.index + 1
                 };
             }
@@ -550,10 +549,10 @@ fn handle_input(
 
     // Rotation is always allowed — player aims before launching
     if keys.pressed(KeyCode::KeyA) || keys.pressed(KeyCode::ArrowLeft) {
-        rocket.angle += ROT_SPEED * dt;
+        rocket.angle += ROT_FORCE * dt / rocket.total_mass;
     }
     if keys.pressed(KeyCode::KeyD) || keys.pressed(KeyCode::ArrowRight) {
-        rocket.angle -= ROT_SPEED * dt;
+        rocket.angle -= ROT_FORCE * dt / rocket.total_mass;
     }
     tf.rotation = Quat::from_rotation_z(rocket.angle - FRAC_PI_2);
 
@@ -1030,14 +1029,14 @@ fn update_hud(
 /// Reposition all stages and their children so they stack neatly under the pod,
 /// then shift everything so the entity origin sits at the center of mass.
 fn relayout_rocket(
-    rocket_q: Query<&Rocket, With<PlayerRocket>>,
+    mut rocket_q: Query<&mut Rocket, With<PlayerRocket>>,
     stage_q: Query<&Children, With<RocketStage>>,
     tank_q: Query<&FuelTank>,
     engine_check: Query<(), With<Engine>>,
     pod_q: Query<Entity, With<CommandPod>>,
     mut transforms: Query<&mut Transform>,
 ) {
-    let Ok(rocket) = rocket_q.get_single() else {
+    let Ok(mut rocket) = rocket_q.get_single_mut() else {
         return;
     };
 
@@ -1127,6 +1126,7 @@ fn relayout_rocket(
     // ── Pass 2: compute centre of mass ────────────────────────────────────
 
     let total_mass: f32 = mass_items.iter().map(|(_, m)| m).sum();
+    rocket.total_mass = total_mass;
     let com_y = if total_mass > 0.0 {
         mass_items.iter().map(|(y, m)| y * m).sum::<f32>() / total_mass
     } else {
