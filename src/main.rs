@@ -7,8 +7,6 @@
 //!   Space/↑/W  main engine  (thrust)
 //!   R          reset to orbit
 
-use std::f32::consts::FRAC_PI_2;
-
 use avian2d::{prelude::*, sync::ancestor_marker::AncestorMarker};
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
@@ -24,14 +22,14 @@ const PLANET_MASS: f32 = 5.0e6; // G·M = 2·10⁷
 const PLANET_RADIUS: f32 = 3400.0;
 const PLANET_SURFACE_GRAVITY: f32 = G * PLANET_MASS / (PLANET_RADIUS * PLANET_RADIUS);
 const FUEL_RATE: f32 = 1.0; // fuel/s at full throttle (per tank)
-const ROT_FORCE: f32 = 15.0; // rad/s
+const ROT_FORCE: f32 = 3000.0; // no idea on the units on this
 
 const MOON_SURFACE_GRAVITY: f32 = PLANET_SURFACE_GRAVITY / 6.0;
 const MOON_MASS: f32 = MOON_SURFACE_GRAVITY * (MOON_RADIUS * MOON_RADIUS) / G; // G·M_moon = 1·10⁶
 const MOON_RADIUS: f32 = 200.0;
 const MOON_ORBIT: f32 = 10000.0; // distance from planet center
 
-const LANDING_MAX_SPEED: f32 = 400.0; // max speed (or relative speed) for a safe landing
+const LANDING_MAX_SPEED: f32 = 200.0; // max speed (or relative speed) for a safe landing
 const STAGE_SEP_VEL: f32 = 10.0;
 
 // ── Game constants ────────────────────────────────────────────────────────────────
@@ -67,7 +65,7 @@ struct Rocket {
     crashed: bool,
     landed: bool,
     // landed_body: Option<Entity>, // which body we're on (None when flying)
-    body_offset: Vec2,            // surface-normal offset from that body's center
+    // body_offset: Vec2,            // surface-normal offset from that body's center
     active_stage: Option<Entity>, // currently burning stage
     stage_queue: Vec<Entity>,     // remaining stages, front = next to activate
     total_mass: f32,
@@ -77,9 +75,9 @@ struct Rocket {
 /// Build a Quat representing a rocket pointing along `direction` (a unit Vec2).
 /// The sprite sheet draws the rocket pointing right (+X), so we rotate it to face
 /// the desired direction by computing the CCW angle from +X.
-fn quat_from_dir(direction: Vec2) -> Quat {
-    Quat::from_rotation_z(direction.to_angle() - FRAC_PI_2)
-}
+// fn quat_from_dir(direction: Vec2) -> Quat {
+//     Quat::from_rotation_z(direction.to_angle() - FRAC_PI_2)
+// }
 
 #[derive(Component)]
 struct PlayerRocket;
@@ -118,14 +116,14 @@ impl CelestialBody {
         body
     }
 
-    pub fn gravity_at(&self, dist: Vec2) -> f32 {
-        let mut dist_sq = dist.length_squared();
-        if dist_sq < 1.0 {
-            dist_sq = 1.0;
-        }
-        // let dist = dist_sq.sqrt();
-        G * self.mass / dist_sq
-    }
+    // pub fn gravity_at(&self, dist: Vec2) -> f32 {
+    //     let mut dist_sq = dist.length_squared();
+    //     if dist_sq < 1.0 {
+    //         dist_sq = 1.0;
+    //     }
+    //     // let dist = dist_sq.sqrt();
+    //     G * self.mass / dist_sq
+    // }
 }
 
 #[derive(Component)]
@@ -1086,7 +1084,7 @@ fn physics_step(
         // find body with the lowest mass that we are in the SOI of
         let (soi_body, body_tf, body) = bodies
             .iter()
-            .min_by(|(e1, t1, b1), (e2, t2, b2)| {
+            .min_by(|(_e1, t1, b1), (_e2, t2, b2)| {
                 let d1 = (t1.translation.truncate() - pos).length();
                 let m1 = if d1 < b1.soi.unwrap_or(f32::MAX) {
                     b1.mass
@@ -1152,7 +1150,7 @@ fn physics_step(
 
         ext_force.set_force(force * mass.value());
 
-        let torque: f32 = rocket.torque * 2000.0;
+        let torque: f32 = rocket.torque * ROT_FORCE;
 
         ext_torque.set_torque(torque);
         // log::dbg
@@ -1305,10 +1303,8 @@ fn collision_handler(
         // TODO: If normal_impusle and tangent_impulse are less than something, switch to landed
         // landed state: Should be marked not active to the physics system, but if an active ship gets close enough, will need to be re-activated
 
-        // FOR NOW: Global break threshold
-        const BREAK_THRESHOLD: f32 = 200.0;
-        if contacts.total_normal_impulse < BREAK_THRESHOLD
-            && contacts.total_tangent_impulse < BREAK_THRESHOLD
+        if contacts.total_normal_impulse < LANDING_MAX_SPEED
+            && contacts.total_tangent_impulse < LANDING_MAX_SPEED
         {
             continue;
         }
