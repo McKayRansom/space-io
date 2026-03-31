@@ -538,7 +538,7 @@ fn handle_input(
             Entity,
             &mut Transform,
             &mut Rocket,
-            &mut Position,
+            // &mut Position,
             &mut LinearVelocity,
         ),
         With<PlayerRocket>,
@@ -546,7 +546,7 @@ fn handle_input(
     mut map_view: ResMut<MapView>,
     bodies: Query<(&Transform, &CelestialBody), Without<Rocket>>,
 ) {
-    let Ok((rocket_entity, mut tf, mut rocket, mut avian_pos, mut lin_vel)) = q.get_single_mut()
+    let Ok((rocket_entity, mut tf, mut rocket, mut lin_vel)) = q.get_single_mut()
     else {
         return;
     };
@@ -628,8 +628,8 @@ fn handle_input(
     if keys.just_pressed(KeyCode::Digit1) {
         // go back to planet
         let new_pos = Vec2::new(0., PLANET_RADIUS);
-        *tf = Transform::from_xyz(new_pos.x, new_pos.y, 1.0);
-        avian_pos.0 = new_pos;
+        tf.translation = Vec3::new(new_pos.x, new_pos.y, 1.0);
+        // avian_pos.0 = new_pos;
         *lin_vel = LinearVelocity(Vec2::ZERO);
         rocket.landed = false;
         rocket.crashed = false;
@@ -639,8 +639,8 @@ fn handle_input(
         let r0 = PLANET_RADIUS * 1.1;
         let orbital_v = (G * PLANET_MASS / r0).sqrt();
         let new_pos = Vec2::new(0., r0);
-        *tf = Transform::from_xyz(new_pos.x, new_pos.y, 1.0);
-        avian_pos.0 = new_pos;
+        tf.translation = Vec3::new(new_pos.x, new_pos.y, 1.0);
+        // avian_pos.0 = new_pos;
         lin_vel.0 = Vec2::new(orbital_v, 0.0);
         rocket.landed = false;
         rocket.crashed = false;
@@ -651,8 +651,8 @@ fn handle_input(
         let r0 = MOON_RADIUS * 1.1;
         let orbital_v = (G * MOON_MASS / r0).sqrt();
         let new_pos = Vec2::new(moon_tf.translation.x, moon_tf.translation.y + r0);
-        *tf = Transform::from_xyz(new_pos.x, new_pos.y, 1.0);
-        avian_pos.0 = new_pos;
+        tf.translation = Vec3::new(new_pos.x, new_pos.y, 1.0);
+        // avian_pos.0 = new_pos;
         lin_vel.0 = moon.velocity + Vec2::new(orbital_v, 0.0);
         rocket.landed = false;
         rocket.crashed = false;
@@ -701,6 +701,7 @@ fn physics_step(
     mut rocket_q: Query<
         (
             &Transform,
+            &ComputedMass,
             &mut Rocket,
             &mut ExternalForce,
             &mut ExternalTorque,
@@ -711,7 +712,7 @@ fn physics_step(
     engine_q: Query<&Engine>,
     mut tank_q: Query<&mut FuelTank>,
 ) {
-    for (tf, rocket, mut ext_force, mut ext_torque) in rocket_q.iter_mut() {
+    for (tf, mass, rocket, mut ext_force, mut ext_torque) in rocket_q.iter_mut() {
         if rocket.crashed {
             continue;
         }
@@ -778,7 +779,7 @@ fn physics_step(
             }
         }
 
-        ext_force.set_force(force * 100.0);
+        ext_force.set_force(force * mass.value());
 
         let torque: f32 = rocket.torque * 1000.0;
 
@@ -949,8 +950,8 @@ fn collision_handler(
         // landed state: Should be marked not active to the physics system, but if an active ship gets close enough, will need to be re-activated
 
         // FOR NOW: Global break threshold
-        const BREAK_THRESHOLD: f32 = 500.0;
-        if contacts.total_normal_impulse < BREAK_THRESHOLD {
+        const BREAK_THRESHOLD: f32 = 200.0;
+        if contacts.total_normal_impulse < BREAK_THRESHOLD && contacts.total_tangent_impulse < BREAK_THRESHOLD {
             continue;
         }
 
