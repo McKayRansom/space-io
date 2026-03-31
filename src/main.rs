@@ -233,6 +233,76 @@ impl Material2d for CloudMaterial {
     }
 }
 
+// ── Moon shader materials ─────────────────────────────────────────────────────
+// MoonSurfaceUniform: colors[3]=48, light_origin=8, 11 scalars=44, 3 pads=12 → 112 bytes (7×16 ✓)
+// MoonCraterUniform:  colors[2]=32, light_origin=8,  7 scalars=28, 3 pads=12 →  80 bytes (5×16 ✓)
+
+#[derive(ShaderType, Clone, Debug)]
+struct MoonSurfaceUniform {
+    colors: [Vec4; 3],
+    light_origin: Vec2,
+    pixels: f32,
+    rotation: f32,
+    time_speed: f32,
+    dither_size: f32,
+    light_border_1: f32,
+    light_border_2: f32,
+    size: f32,
+    seed: f32,
+    octaves: i32,
+    time: f32,
+    should_dither: u32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+struct MoonSurfaceMaterial {
+    #[uniform(0)]
+    params: MoonSurfaceUniform,
+}
+
+impl Material2d for MoonSurfaceMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/moon_surface.wgsl".into()
+    }
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+}
+
+#[derive(ShaderType, Clone, Debug)]
+struct MoonCraterUniform {
+    colors: [Vec4; 2],
+    light_origin: Vec2,
+    pixels: f32,
+    rotation: f32,
+    time_speed: f32,
+    light_border: f32,
+    size: f32,
+    seed: f32,
+    time: f32,
+    _pad0: u32,
+    _pad1: u32,
+    _pad2: u32,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+struct MoonCraterMaterial {
+    #[uniform(0)]
+    params: MoonCraterUniform,
+}
+
+impl Material2d for MoonCraterMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/moon_craters.wgsl".into()
+    }
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+}
+
 /// Convert an sRGB channel value to linear light (matches Godot's source_color hint behaviour).
 fn srgb_to_linear(c: f32) -> f32 {
     if c <= 0.04045 {
@@ -251,12 +321,20 @@ fn animate_planet_time(
     time: Res<Time>,
     mut planet_materials: ResMut<Assets<PlanetMaterial>>,
     mut cloud_materials: ResMut<Assets<CloudMaterial>>,
+    mut moon_surface_materials: ResMut<Assets<MoonSurfaceMaterial>>,
+    mut moon_crater_materials: ResMut<Assets<MoonCraterMaterial>>,
 ) {
     let dt = time.delta_secs();
     for (_, mat) in planet_materials.iter_mut() {
         mat.params.time += dt;
     }
     for (_, mat) in cloud_materials.iter_mut() {
+        mat.params.time += dt;
+    }
+    for (_, mat) in moon_surface_materials.iter_mut() {
+        mat.params.time += dt;
+    }
+    for (_, mat) in moon_crater_materials.iter_mut() {
         mat.params.time += dt;
     }
 }
@@ -283,6 +361,8 @@ fn main() {
         )
         .add_plugins(Material2dPlugin::<PlanetMaterial>::default())
         .add_plugins(Material2dPlugin::<CloudMaterial>::default())
+        .add_plugins(Material2dPlugin::<MoonSurfaceMaterial>::default())
+        .add_plugins(Material2dPlugin::<MoonCraterMaterial>::default())
         .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.08)))
         .insert_resource(MapView::default())
         .add_systems(Startup, (setup, apply_deferred, relayout_rocket).chain())
@@ -442,6 +522,8 @@ fn setup(
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut planet_materials: ResMut<Assets<PlanetMaterial>>,
     mut cloud_materials: ResMut<Assets<CloudMaterial>>,
+    mut moon_surface_materials: ResMut<Assets<MoonSurfaceMaterial>>,
+    mut moon_crater_materials: ResMut<Assets<MoonCraterMaterial>>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
@@ -557,10 +639,59 @@ fn setup(
     ));
 
     // ── Moon ───────────────────────────────────────────────────────────────
+    // Colors from NoAtmosphere.tscn (sRGB→linear):
+    //   Surface [0]=light grey-blue, [1]=mid blue-grey, [2]=dark blue-grey
+    //   Craters [0]=mid blue-grey (lit), [1]=dark blue-grey (shadow)
+    let moon_seed = rand::thread_rng().gen_range(1.0f32..10.0f32);
     let moon_orbital_v = (G * PLANET_MASS / MOON_ORBIT).sqrt();
+    #[rustfmt::skip]
+    let moon_surface_mat = moon_surface_materials.add(MoonSurfaceMaterial {
+        params: MoonSurfaceUniform {
+            colors: [
+                planet_color(0.639, 0.655, 0.761), // light grey-blue (lit)
+                planet_color(0.298, 0.408, 0.522), // mid blue-grey
+                planet_color(0.227, 0.247, 0.369), // dark blue-grey (shadow)
+            ],
+            light_origin:   Vec2::new(0.25, 0.25),
+            pixels:         100.0,
+            rotation:       0.0,
+            time_speed:     0.4,
+            dither_size:    2.0,
+            light_border_1: 0.615,
+            light_border_2: 0.729,
+            size:           8.0,
+            seed:           moon_seed,
+            octaves:        4,
+            time:           0.0,
+            should_dither:  1,
+            _pad0:          0,
+            _pad1:          0,
+            _pad2:          0,
+        },
+    });
+    #[rustfmt::skip]
+    let moon_crater_mat = moon_crater_materials.add(MoonCraterMaterial {
+        params: MoonCraterUniform {
+            colors: [
+                planet_color(0.298, 0.408, 0.522), // mid blue-grey (crater lit)
+                planet_color(0.227, 0.247, 0.369), // dark blue-grey (crater shadow)
+            ],
+            light_origin:   Vec2::new(0.25, 0.25),
+            pixels:         87.419,
+            rotation:       0.0,
+            time_speed:     0.001,
+            light_border:   0.465,
+            size:           5.0,
+            seed:           moon_seed,
+            time:           0.0,
+            _pad0:          0,
+            _pad1:          0,
+            _pad2:          0,
+        },
+    });
     commands.spawn((
         Mesh2d(meshes.add(Circle::new(MOON_RADIUS))),
-        MeshMaterial2d(materials.add(Color::srgb(0.62, 0.62, 0.68))),
+        MeshMaterial2d(moon_surface_mat),
         Transform::from_xyz(MOON_ORBIT, 0., 0.2),
         CelestialBody {
             mass: MOON_MASS,
@@ -568,7 +699,13 @@ fn setup(
             velocity: Vec2::new(0., -moon_orbital_v),
             fixed: false,
         },
-    ));
+    )).with_children(|parent| {
+        parent.spawn((
+            Mesh2d(meshes.add(Circle::new(MOON_RADIUS))),
+            MeshMaterial2d(moon_crater_mat),
+            Transform::from_xyz(0., 0., 0.01),
+        ));
+    });
 
     // ── Rocket ─────────────────────────────────────────────────────────────
     let texture = asset_server.load("space-io.png");
