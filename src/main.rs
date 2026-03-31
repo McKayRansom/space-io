@@ -14,7 +14,7 @@ use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
     render::render_resource::{AsBindGroup, ShaderRef, ShaderType},
-    sprite::{Material2d, Material2dPlugin},
+    sprite::{AlphaMode2d, Material2d, Material2dPlugin},
 };
 use rand::Rng;
 
@@ -194,9 +194,70 @@ impl Material2d for PlanetMaterial {
     }
 }
 
-fn animate_planet_time(time: Res<Time>, mut planet_materials: ResMut<Assets<PlanetMaterial>>) {
+// ── Cloud shader material ─────────────────────────────────────────────────────
+// Layout must match cloud.wgsl CloudMaterialUniform (std140, 128 bytes total):
+//   colors[4]: 64 bytes, light_origin: 8, then 10 scalars × 4 = 40, _pad0/_pad1 × 4 = 8
+
+#[derive(ShaderType, Clone, Debug)]
+struct CloudMaterialUniform {
+    colors: [Vec4; 4],
+    light_origin: Vec2,
+    pixels: f32,
+    rotation: f32,
+    cloud_cover: f32,
+    time_speed: f32,
+    stretch: f32,
+    cloud_curve: f32,
+    light_border_1: f32,
+    light_border_2: f32,
+    size: f32,
+    seed: f32,
+    octaves: i32,
+    time: f32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+struct CloudMaterial {
+    #[uniform(0)]
+    params: CloudMaterialUniform,
+}
+
+impl Material2d for CloudMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/cloud.wgsl".into()
+    }
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
+    }
+}
+
+/// Convert an sRGB channel value to linear light (matches Godot's source_color hint behaviour).
+fn srgb_to_linear(c: f32) -> f32 {
+    if c <= 0.04045 {
+        c / 12.92
+    } else {
+        ((c + 0.055) / 1.055_f32).powf(2.4)
+    }
+}
+
+/// Build a Vec4 from sRGB display values, converting to linear for the shader.
+fn planet_color(r: f32, g: f32, b: f32) -> Vec4 {
+    Vec4::new(srgb_to_linear(r), srgb_to_linear(g), srgb_to_linear(b), 1.0)
+}
+
+fn animate_planet_time(
+    time: Res<Time>,
+    mut planet_materials: ResMut<Assets<PlanetMaterial>>,
+    mut cloud_materials: ResMut<Assets<CloudMaterial>>,
+) {
+    let dt = time.delta_secs();
     for (_, mat) in planet_materials.iter_mut() {
-        mat.params.time += time.delta_secs();
+        mat.params.time += dt;
+    }
+    for (_, mat) in cloud_materials.iter_mut() {
+        mat.params.time += dt;
     }
 }
 
@@ -221,6 +282,7 @@ fn main() {
                 .set(ImagePlugin::default_nearest()),
         )
         .add_plugins(Material2dPlugin::<PlanetMaterial>::default())
+        .add_plugins(Material2dPlugin::<CloudMaterial>::default())
         .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.08)))
         .insert_resource(MapView::default())
         .add_systems(Startup, (setup, apply_deferred, relayout_rocket).chain())
@@ -379,6 +441,7 @@ fn setup(
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
     mut planet_materials: ResMut<Assets<PlanetMaterial>>,
+    mut cloud_materials: ResMut<Assets<CloudMaterial>>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
@@ -412,12 +475,12 @@ fn setup(
     let planet_mat = planet_materials.add(PlanetMaterial {
         params: PlanetMaterialUniform {
             colors: [
-                Vec4::new(0.388, 0.671, 0.247, 1.0),
-                Vec4::new(0.231, 0.490, 0.310, 1.0),
-                Vec4::new(0.184, 0.341, 0.325, 1.0),
-                Vec4::new(0.157, 0.208, 0.251, 1.0),
-                Vec4::new(0.310, 0.643, 0.722, 1.0),
-                Vec4::new(0.251, 0.286, 0.451, 1.0),
+                planet_color(0.388, 0.671, 0.247), // bright green (lit land)
+                planet_color(0.231, 0.490, 0.310), // mid green
+                planet_color(0.184, 0.341, 0.325), // dark teal
+                planet_color(0.157, 0.208, 0.251), // shadow blue-grey
+                planet_color(0.310, 0.643, 0.722), // shallow river
+                planet_color(0.251, 0.286, 0.451), // deep river
             ],
             light_origin:   Vec2::new(0.39, 0.39),
             pixels:         100.0,
@@ -449,6 +512,41 @@ fn setup(
         // avian2d: static body with a circular collider for rocket landing detection
         RigidBody::Static,
         Collider::circle(PLANET_RADIUS),
+    ));
+
+    // ── Cloud layer ────────────────────────────────────────────────────────
+    // Colors from Rivers.tscn cloud shader (id="2"), sRGB→linear converted:
+    //   [0] bright white, [1] off-white, [2] mid-shadow, [3] dark shadow
+    #[rustfmt::skip]
+    let cloud_mat = cloud_materials.add(CloudMaterial {
+        params: CloudMaterialUniform {
+            colors: [
+                planet_color(0.961, 1.000, 0.910), // bright cloud (lit)
+                planet_color(0.875, 0.878, 0.910), // off-white cloud
+                planet_color(0.408, 0.435, 0.600), // mid shadow
+                planet_color(0.251, 0.286, 0.451), // dark shadow
+            ],
+            light_origin:   Vec2::new(0.39, 0.39),
+            pixels:         100.0,
+            rotation:       0.0,
+            cloud_cover:    0.47,
+            time_speed:     0.1,
+            stretch:        2.0,
+            cloud_curve:    1.3,
+            light_border_1: 0.52,
+            light_border_2: 0.62,
+            size:           7.315,
+            seed:           rand::thread_rng().gen_range(1.0f32..10.0f32),
+            octaves:        2,
+            time:           0.0,
+            _pad0:          0,
+            _pad1:          0,
+        },
+    });
+    commands.spawn((
+        Mesh2d(meshes.add(Circle::new(PLANET_RADIUS * 1.02))),
+        MeshMaterial2d(cloud_mat),
+        Transform::from_xyz(0., 0., 0.02),
     ));
 
     // Atmosphere glow ring (visual only, no physics)
