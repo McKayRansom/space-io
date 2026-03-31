@@ -13,6 +13,8 @@ use avian2d::{prelude::*, sync::ancestor_marker::AncestorMarker};
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
+    render::render_resource::{AsBindGroup, ShaderRef, ShaderType},
+    sprite::{Material2d, Material2dPlugin},
 };
 use rand::Rng;
 
@@ -156,13 +158,55 @@ struct RocketAssets {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
+// ── Planet shader material ────────────────────────────────────────────────────
+// Layout must match planet.wgsl PlanetMaterialUniform (std140, 160 bytes total):
+//   colors[6]: 96 bytes, light_origin: 8, then 13 scalars × 4 = 52, _pad0/_pad1 × 4 = 8
+
+#[derive(ShaderType, Clone, Debug)]
+struct PlanetMaterialUniform {
+    colors: [Vec4; 6],
+    light_origin: Vec2,
+    pixels: f32,
+    rotation: f32,
+    time_speed: f32,
+    dither_size: f32,
+    light_border_1: f32,
+    light_border_2: f32,
+    river_cutoff: f32,
+    size: f32,
+    seed: f32,
+    octaves: i32,
+    time: f32,
+    should_dither: u32,
+    _pad0: u32,
+    _pad1: u32,
+}
+
+#[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
+struct PlanetMaterial {
+    #[uniform(0)]
+    params: PlanetMaterialUniform,
+}
+
+impl Material2d for PlanetMaterial {
+    fn fragment_shader() -> ShaderRef {
+        "shaders/planet.wgsl".into()
+    }
+}
+
+fn animate_planet_time(time: Res<Time>, mut planet_materials: ResMut<Assets<PlanetMaterial>>) {
+    for (_, mat) in planet_materials.iter_mut() {
+        mat.params.time += time.delta_secs();
+    }
+}
+
 fn main() {
     App::new()
         .add_plugins(FrameTimeDiagnosticsPlugin)
         .add_plugins(
             PhysicsPlugins::default(), // Enables debug rendering
         )
-        .add_plugins(PhysicsDebugPlugin::default())
+        // .add_plugins(PhysicsDebugPlugin::default())
         .insert_resource(Gravity(Vec2::ZERO)) // we apply custom N-body gravity manually
         .add_plugins(
             DefaultPlugins
@@ -176,9 +220,11 @@ fn main() {
                 })
                 .set(ImagePlugin::default_nearest()),
         )
+        .add_plugins(Material2dPlugin::<PlanetMaterial>::default())
         .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.08)))
         .insert_resource(MapView::default())
         .add_systems(Startup, (setup, apply_deferred, relayout_rocket).chain())
+        .add_systems(Update, animate_planet_time)
         .add_systems(
             Update,
             (
@@ -332,6 +378,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
+    mut planet_materials: ResMut<Assets<PlanetMaterial>>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
@@ -358,9 +405,40 @@ fn setup(
     }
 
     // ── Planet ─────────────────────────────────────────────────────────────
+    // Colors from Rivers.tscn default scheme:
+    //   [0] bright green, [1] mid green, [2] dark teal, [3] shadow blue-grey
+    //   [4] shallow river blue, [5] deep river blue
+    #[rustfmt::skip]
+    let planet_mat = planet_materials.add(PlanetMaterial {
+        params: PlanetMaterialUniform {
+            colors: [
+                Vec4::new(0.388, 0.671, 0.247, 1.0),
+                Vec4::new(0.231, 0.490, 0.310, 1.0),
+                Vec4::new(0.184, 0.341, 0.325, 1.0),
+                Vec4::new(0.157, 0.208, 0.251, 1.0),
+                Vec4::new(0.310, 0.643, 0.722, 1.0),
+                Vec4::new(0.251, 0.286, 0.451, 1.0),
+            ],
+            light_origin:   Vec2::new(0.39, 0.39),
+            pixels:         100.0,
+            rotation:       0.2,
+            time_speed:     0.1,
+            dither_size:    3.951,
+            light_border_1: 0.287,
+            light_border_2: 0.476,
+            river_cutoff:   0.368,
+            size:           4.6,
+            seed:           rand::thread_rng().gen_range(1.0f32..10.0f32),
+            octaves:        6,
+            time:           0.0,
+            should_dither:  1,
+            _pad0:          0,
+            _pad1:          0,
+        },
+    });
     commands.spawn((
         Mesh2d(meshes.add(Circle::new(PLANET_RADIUS))),
-        MeshMaterial2d(materials.add(Color::srgb(0.15, 0.50, 0.22))),
+        MeshMaterial2d(planet_mat),
         Transform::default(),
         CelestialBody {
             mass: PLANET_MASS,
@@ -781,7 +859,7 @@ fn physics_step(
 
         ext_force.set_force(force * mass.value());
 
-        let torque: f32 = rocket.torque * 1000.0;
+        let torque: f32 = rocket.torque * 2000.0;
 
         ext_torque.set_torque(torque);
         // log::dbg
