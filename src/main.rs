@@ -189,6 +189,7 @@ fn main() {
                 // handle_planet_collision,
                 // check_surface_contact,
                 // relayout_rocket,
+                collision_handler,
                 rebuild_editor_ui,
                 update_trajectory,
                 update_exhaust,
@@ -937,67 +938,34 @@ fn update_trajectory(
 /// Handles rocket collisions with the planet (detected by avian2d).
 /// The planet has a Collider::circle so avian fires CollisionStarted events when
 /// a rocket's circle collider overlaps it. We decide land vs crash here.
-// fn handle_planet_collision(
-//     mut collision_events: EventReader<CollisionStarted>,
-//     planet_q: Query<(Entity, &CelestialBody), With<RigidBody>>,
-//     rocket_check: Query<(), (With<Rocket>, Without<CelestialBody>)>,
-//     mut rocket_q: Query<(&mut Transform, &mut Rocket, &mut LinearVelocity), Without<CelestialBody>>,
-// ) {
-//     for &CollisionStarted(e1, e2) in collision_events.read() {
-//         // Identify which entity is the rocket and which is a celestial body
-//         let (rocket_entity, body_entity) = if rocket_check.contains(e1) && planet_q.contains(e2) {
-//             (e1, e2)
-//         } else if rocket_check.contains(e2) && planet_q.contains(e1) {
-//             (e2, e1)
-//         } else {
-//             continue;
-//         };
+fn collision_handler(
+    mut commands: Commands,
+    mut collision_events: EventReader<Collision>,
+    planet_q: Query<(Entity, &CelestialBody), With<RigidBody>>,
+) {
+    for Collision(contacts) in collision_events.read() {
 
-//         let Ok((_, body)) = planet_q.get(body_entity) else {
-//             continue;
-//         };
-//         // Only handle fixed bodies here; moving bodies (moon) are handled by
-//         // check_surface_contact below.
-//         if !body.fixed {
-//             continue;
-//         }
+        // TODO: If normal_impusle and tangent_impulse are less than something, switch to landed
+        // landed state: Should be marked not active to the physics system, but if an active ship gets close enough, will need to be re-activated
 
-//         let Ok((mut rtf, mut rocket, mut lin_vel)) = rocket_q.get_mut(rocket_entity) else {
-//             continue;
-//         };
-//         if rocket.crashed || rocket.landed {
-//             continue;
-//         }
+        // FOR NOW: Global break threshold
+        const BREAK_THRESHOLD: f32 = 500.0;
+        if contacts.total_normal_impulse < BREAK_THRESHOLD {
+            continue;
+        }
 
-//         let pos = rtf.translation.truncate();
-//         let rel_vel = rocket.velocity - body.velocity; // body.velocity == Vec2::ZERO for fixed
 
-//         // Only trigger if the rocket is moving toward the surface
-//         let from_body = pos.normalize(); // planet is at origin
-//         if rel_vel.dot(from_body) > 0.0 {
-//             continue;
-//         }
-
-//         let rel_speed = rel_vel.length();
-//         if rel_speed <= LANDING_MAX_SPEED {
-//             let normal = from_body;
-//             rocket.velocity = body.velocity;
-//             lin_vel.0 = body.velocity;
-//             rocket.throttle = 0.0;
-//             rocket.landed = true;
-//             rocket.landed_body = Some(body_entity);
-//             rocket.body_offset = normal * body.radius;
-//             let snap = (body.radius * normal).extend(1.0);
-//             rtf.translation = snap;
-//             rtf.rotation = quat_from_dir(normal);
-//         } else {
-//             rocket.crashed = true;
-//             rocket.velocity = Vec2::ZERO;
-//             lin_vel.0 = Vec2::ZERO;
-//             rocket.throttle = 0.0;
-//         }
-//     }
-// }
+        // TODO: if this is a command pod, that's game over
+        // only if not planet
+        if planet_q.get(contacts.entity1).is_err() {
+            commands.entity(contacts.entity1).despawn_recursive();
+        }
+        // only if not planet
+        if planet_q.get(contacts.entity2).is_err() {
+            commands.entity(contacts.entity2).despawn_recursive();
+        }
+    }
+}
 
 /// Manual collision check for non-physics bodies (the moon has no avian Collider).
 /// Also acts as a fallback for any rocket that avian hasn't detected yet.
