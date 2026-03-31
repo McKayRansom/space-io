@@ -66,11 +66,12 @@ struct Rocket {
     torque: f32,   // -1 or 0 or 1 rotation
     crashed: bool,
     landed: bool,
-    landed_body: Option<Entity>, // which body we're on (None when flying)
-    body_offset: Vec2,           // surface-normal offset from that body's center
+    // landed_body: Option<Entity>, // which body we're on (None when flying)
+    body_offset: Vec2,            // surface-normal offset from that body's center
     active_stage: Option<Entity>, // currently burning stage
-    stage_queue: Vec<Entity>,    // remaining stages, front = next to activate
+    stage_queue: Vec<Entity>,     // remaining stages, front = next to activate
     total_mass: f32,
+    soi_body: Option<Entity>, // which body we're in the SOI of
 }
 
 /// Build a Quat representing a rocket pointing along `direction` (a unit Vec2).
@@ -88,10 +89,35 @@ struct CelestialBody {
     mass: f32,
     radius: f32,
     velocity: Vec2,
-    fixed: bool, // if true, unaffected by gravity (e.g. the central planet)
+    parent: Option<Entity>, // we don't want to parent using Bevy, because we want seprate physics objects, etc...
+    soi: Option<f32>,       // radisu of the sphere of influence
 }
-
 impl CelestialBody {
+    pub fn new(
+        mass: f32,
+        radius: f32,
+        orbital_radius: f32,
+        parent: Option<Entity>,
+        parent_mass: Option<f32>,
+    ) -> Self {
+        let body = Self {
+            mass,
+            radius,
+            // assume starting at +x for now
+            velocity: if let Some(parent_mass) = parent_mass {
+                Vec2::new(0., (G * parent_mass / orbital_radius).sqrt())
+            } else {
+                Vec2::ZERO
+            },
+            parent,
+            // cheat and assume orbital_radius instead of semi-major axis (a)
+            soi: parent_mass
+                .map(|parent_mass| orbital_radius * (mass / parent_mass).powf(2.0 / 5.0)),
+        };
+        // println!("Body radius: {} soi: {}", radius, body.soi.unwrap_or(f32::MAX));
+        body
+    }
+
     pub fn gravity_at(&self, dist: Vec2) -> f32 {
         let mut dist_sq = dist.length_squared();
         if dist_sq < 1.0 {
@@ -191,6 +217,9 @@ struct PlanetMaterial {
 impl Material2d for PlanetMaterial {
     fn fragment_shader() -> ShaderRef {
         "shaders/planet.wgsl".into()
+    }
+    fn alpha_mode(&self) -> AlphaMode2d {
+        AlphaMode2d::Blend
     }
 }
 
@@ -324,7 +353,9 @@ fn animate_planet_time(
     mut moon_surface_materials: ResMut<Assets<MoonSurfaceMaterial>>,
     mut moon_crater_materials: ResMut<Assets<MoonCraterMaterial>>,
 ) {
-    let dt = time.delta_secs();
+    // slow-down time slightly
+    let dt = time.delta_secs() * 0.1;
+
     for (_, mat) in planet_materials.iter_mut() {
         mat.params.time += dt;
     }
@@ -441,7 +472,7 @@ fn build_stage(
 }
 
 /// Spawn the default two-stage rocket.
-fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
+fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets, planet: &Entity) {
     let stage1 = build_stage(commands, assets, 1, 80.0, PLANET_SURFACE_GRAVITY * 1.5);
     let stage2 = build_stage(commands, assets, 1, 40.0, PLANET_SURFACE_GRAVITY * 1.3);
 
@@ -462,6 +493,7 @@ fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets) {
             Rocket {
                 active_stage: Some(stage1),
                 stage_queue: vec![stage2],
+                soi_body: Some(*planet),
                 ..Default::default()
             },
             PlayerRocket,
@@ -581,20 +613,17 @@ fn setup(
             _pad1:          0,
         },
     });
-    commands.spawn((
-        Mesh2d(meshes.add(Circle::new(PLANET_RADIUS))),
-        MeshMaterial2d(planet_mat),
-        Transform::default(),
-        CelestialBody {
-            mass: PLANET_MASS,
-            radius: PLANET_RADIUS,
-            velocity: Vec2::ZERO,
-            fixed: true,
-        },
-        // avian2d: static body with a circular collider for rocket landing detection
-        RigidBody::Static,
-        Collider::circle(PLANET_RADIUS),
-    ));
+    let planet = commands
+        .spawn((
+            Mesh2d(meshes.add(Rectangle::new(PLANET_RADIUS * 2., PLANET_RADIUS * 2.))),
+            MeshMaterial2d(planet_mat),
+            Transform::default(),
+            CelestialBody::new(PLANET_MASS, PLANET_RADIUS, 0.0, None, None),
+            // avian2d: static body with a circular collider for rocket landing detection
+            RigidBody::Static,
+            Collider::circle(PLANET_RADIUS),
+        ))
+        .id();
 
     // ── Cloud layer ────────────────────────────────────────────────────────
     // Colors from Rivers.tscn cloud shader (id="2"), sRGB→linear converted:
@@ -626,7 +655,7 @@ fn setup(
         },
     });
     commands.spawn((
-        Mesh2d(meshes.add(Circle::new(PLANET_RADIUS * 1.02))),
+        Mesh2d(meshes.add(Rectangle::new(PLANET_RADIUS * 2., PLANET_RADIUS * 2.))),
         MeshMaterial2d(cloud_mat),
         Transform::from_xyz(0., 0., 0.02),
     ));
@@ -643,7 +672,6 @@ fn setup(
     //   Surface [0]=light grey-blue, [1]=mid blue-grey, [2]=dark blue-grey
     //   Craters [0]=mid blue-grey (lit), [1]=dark blue-grey (shadow)
     let moon_seed = rand::thread_rng().gen_range(1.0f32..10.0f32);
-    let moon_orbital_v = (G * PLANET_MASS / MOON_ORBIT).sqrt();
     #[rustfmt::skip]
     let moon_surface_mat = moon_surface_materials.add(MoonSurfaceMaterial {
         params: MoonSurfaceUniform {
@@ -689,23 +717,26 @@ fn setup(
             _pad2:          0,
         },
     });
-    commands.spawn((
-        Mesh2d(meshes.add(Circle::new(MOON_RADIUS))),
-        MeshMaterial2d(moon_surface_mat),
-        Transform::from_xyz(MOON_ORBIT, 0., 0.2),
-        CelestialBody {
-            mass: MOON_MASS,
-            radius: MOON_RADIUS,
-            velocity: Vec2::new(0., -moon_orbital_v),
-            fixed: false,
-        },
-    )).with_children(|parent| {
-        parent.spawn((
-            Mesh2d(meshes.add(Circle::new(MOON_RADIUS))),
-            MeshMaterial2d(moon_crater_mat),
-            Transform::from_xyz(0., 0., 0.01),
-        ));
-    });
+    commands
+        .spawn((
+            Mesh2d(meshes.add(Rectangle::new(MOON_RADIUS * 2., MOON_RADIUS * 2.))),
+            MeshMaterial2d(moon_surface_mat),
+            Transform::from_xyz(MOON_ORBIT, 0., 0.2),
+            CelestialBody::new(
+                MOON_MASS,
+                MOON_RADIUS,
+                MOON_ORBIT,
+                Some(planet),
+                Some(PLANET_MASS),
+            ),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Mesh2d(meshes.add(Rectangle::new(MOON_RADIUS * 2., MOON_RADIUS * 2.))),
+                MeshMaterial2d(moon_crater_mat),
+                Transform::from_xyz(0., 0., 0.01),
+            ));
+        });
 
     // ── Rocket ─────────────────────────────────────────────────────────────
     let texture = asset_server.load("space-io.png");
@@ -747,7 +778,7 @@ fn setup(
             ..Default::default()
         },
     };
-    spawn_default_rocket(&mut commands, &rocket_assets);
+    spawn_default_rocket(&mut commands, &rocket_assets, &planet);
     commands.insert_resource(rocket_assets);
 
     // ── HUD ────────────────────────────────────────────────────────────────
@@ -857,10 +888,9 @@ fn handle_input(
         With<PlayerRocket>,
     >,
     mut map_view: ResMut<MapView>,
-    bodies: Query<(&Transform, &CelestialBody), Without<Rocket>>,
+    bodies: Query<(Entity, &Transform, &CelestialBody), Without<Rocket>>,
 ) {
-    let Ok((rocket_entity, mut tf, mut rocket, mut lin_vel)) = q.get_single_mut()
-    else {
+    let Ok((rocket_entity, mut tf, mut rocket, mut lin_vel)) = q.get_single_mut() else {
         return;
     };
 
@@ -873,7 +903,15 @@ fn handle_input(
     if keys.just_pressed(KeyCode::KeyR) {
         commands.entity(rocket_entity).despawn_recursive();
 
-        spawn_default_rocket(&mut commands, &assets);
+        spawn_default_rocket(
+            &mut commands,
+            &assets,
+            &bodies
+                .iter()
+                .find(|body| body.2.parent.is_none())
+                .unwrap()
+                .0,
+        );
         return;
     }
 
@@ -960,7 +998,7 @@ fn handle_input(
     }
     if keys.just_pressed(KeyCode::Digit3) {
         // go to moon orbit
-        let (moon_tf, moon) = bodies.iter().find(|body| body.1.fixed == false).unwrap();
+        let (_entity, moon_tf, moon) = bodies.iter().find(|body| body.2.parent.is_some()).unwrap();
         let r0 = MOON_RADIUS * 1.1;
         let orbital_v = (G * MOON_MASS / r0).sqrt();
         let new_pos = Vec2::new(moon_tf.translation.x, moon_tf.translation.y + r0);
@@ -972,7 +1010,6 @@ fn handle_input(
     }
 }
 
-// TODO: N-body is overkill here, let's just do the parent LOL
 fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mut CelestialBody)>) {
     let dt = time.delta_secs();
 
@@ -982,16 +1019,17 @@ fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mu
         .map(|(e, tf, b)| (e, tf.translation.truncate(), b.mass))
         .collect();
 
-    for (entity, mut tf, mut body) in bodies.iter_mut() {
-        if body.fixed {
+    for (_entity, mut tf, mut body) in bodies.iter_mut() {
+        if body.parent.is_none() {
             continue;
         }
         let pos = tf.translation.truncate();
         let mut accel = Vec2::ZERO;
-        for &(other_entity, other_pos, other_mass) in &states {
-            if other_entity == entity {
-                continue;
-            }
+
+        if let Some((_other_entity, other_pos, other_mass)) = states
+            .iter()
+            .find(|(entity, _, _)| entity == &body.parent.unwrap())
+        {
             let to_other = other_pos - pos;
             let dist_sq = to_other.length_squared();
             if dist_sq < 1.0 {
@@ -999,7 +1037,6 @@ fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mu
             }
             let dist = dist_sq.sqrt();
             accel += (to_other / dist) * (G * other_mass / dist_sq);
-            // accel +=
         }
         body.velocity += accel * dt;
         let v = body.velocity;
@@ -1025,7 +1062,7 @@ fn physics_step(
     engine_q: Query<&Engine>,
     mut tank_q: Query<&mut FuelTank>,
 ) {
-    for (tf, mass, rocket, mut ext_force, mut ext_torque) in rocket_q.iter_mut() {
+    for (tf, mass, mut rocket, mut ext_force, mut ext_torque) in rocket_q.iter_mut() {
         if rocket.crashed {
             continue;
         }
@@ -1046,16 +1083,37 @@ fn physics_step(
 
         let mut force: Vec2 = Vec2::ZERO;
 
-        // Gravity from every celestial body
-        for (_, body_tf, body) in bodies.iter() {
-            let to_body = body_tf.translation.truncate() - pos;
-            let dist_sq = to_body.length_squared();
-            if dist_sq < 1.0 {
-                continue;
-            }
-            let dist = dist_sq.sqrt();
-            force += (to_body / dist) * (G * body.mass / dist_sq);
+        // find body with the lowest mass that we are in the SOI of
+        let (soi_body, body_tf, body) = bodies
+            .iter()
+            .min_by(|(e1, t1, b1), (e2, t2, b2)| {
+                let d1 = (t1.translation.truncate() - pos).length();
+                let m1 = if d1 < b1.soi.unwrap_or(f32::MAX) {
+                    b1.mass
+                } else {
+                    // not in SOI
+                    f32::MAX
+                };
+                let d2 = (t2.translation.truncate() - pos).length();
+                let m2 = if d2 < b2.soi.unwrap_or(f32::MAX) {
+                    b2.mass
+                } else {
+                    // not in SOI
+                    f32::MAX
+                };
+                m1.partial_cmp(&m2).unwrap()
+            })
+            .unwrap();
+        rocket.soi_body = Some(soi_body);
+
+        // Gravity from parent celestial body
+        let to_body = body_tf.translation.truncate() - pos;
+        let dist_sq = to_body.length_squared();
+        if dist_sq < 1.0 {
+            continue;
         }
+        let dist = dist_sq.sqrt();
+        force += (to_body / dist) * (G * body.mass / dist_sq);
 
         // Thrust — read engine thrust and consume fuel from the active stage's children
         if rocket.throttle > 0.0 {
@@ -1201,50 +1259,36 @@ fn update_trajectory(
 ) {
     // draw moon trajectory
     for (bt, body) in bodies.iter() {
-        if body.fixed {
+        if body.parent.is_none() {
             continue;
         }
-        for (bt2, body2) in bodies.iter() {
-            if !body2.fixed {
-                continue;
-            }
+        let (bt2, body2) = bodies.get(body.parent.unwrap()).unwrap();
+        // if !body2.fixed {
+        //     continue;
+        // }
 
-            let pos = bt.translation.truncate() - bt2.translation.truncate(); // position relative to orbital focus
-            let vel = body.velocity;
+        let pos = bt.translation.truncate() - bt2.translation.truncate(); // position relative to orbital focus
+        let vel = body.velocity;
 
-            if let Some(orbit) = OrbitalParameters::calc(body2.mass, pos, vel) {
-                draw_orbit(&mut gizmos, bt2.translation.truncate(), orbit);
-            }
+        if let Some(orbit) = OrbitalParameters::calc(body2.mass, pos, vel) {
+            draw_orbit(&mut gizmos, bt2.translation.truncate(), orbit);
         }
     }
 
     let Ok((rtf, velocity, rocket)) = rocket_q.get_single() else {
         return;
     };
-    if rocket.crashed || rocket.landed {
+    if rocket.crashed || rocket.landed || rocket.soi_body.is_none() {
         return;
     }
 
-    // Use the body with the highest gravitational force
-    // TODO: THIS DOESN"T WORK
-    let Some((focus, mass)) = bodies
-        .iter()
-        // .filter(|(_, b)| b.fixed)
-        .max_by(|(at, a), (bt, b)| {
-            let a_grav = a.gravity_at(at.translation.truncate() - rtf.translation.truncate());
-            let b_grav = b.gravity_at(bt.translation.truncate() - rtf.translation.truncate());
-            // bt.translation.truncate() - at.translation.truncate()
-            a_grav.partial_cmp(&b_grav).unwrap()
-        })
-        .map(|(tf, b)| (tf.translation.truncate(), b.mass))
-    else {
-        return;
-    };
+    let (tf, body) = bodies.get(rocket.soi_body.unwrap()).unwrap();
+    let focus = tf.translation.truncate();
 
     let pos = rtf.translation.truncate() - focus; // position relative to orbital focus
     let vel = velocity;
 
-    if let Some(orbit) = OrbitalParameters::calc(mass, pos, **vel) {
+    if let Some(orbit) = OrbitalParameters::calc(body.mass, pos, **vel) {
         draw_orbit(&mut gizmos, focus, orbit);
     }
 }
@@ -1258,16 +1302,16 @@ fn collision_handler(
     planet_q: Query<(Entity, &CelestialBody), With<RigidBody>>,
 ) {
     for Collision(contacts) in collision_events.read() {
-
         // TODO: If normal_impusle and tangent_impulse are less than something, switch to landed
         // landed state: Should be marked not active to the physics system, but if an active ship gets close enough, will need to be re-activated
 
         // FOR NOW: Global break threshold
         const BREAK_THRESHOLD: f32 = 200.0;
-        if contacts.total_normal_impulse < BREAK_THRESHOLD && contacts.total_tangent_impulse < BREAK_THRESHOLD {
+        if contacts.total_normal_impulse < BREAK_THRESHOLD
+            && contacts.total_tangent_impulse < BREAK_THRESHOLD
+        {
             continue;
         }
-
 
         // TODO: if this is a command pod, that's game over
         // only if not planet
@@ -1614,9 +1658,9 @@ fn rebuild_editor_ui(
         .map(|rocket| {
             rocket.landed
                 && rocket
-                    .landed_body
+                    .soi_body
                     .and_then(|e| body_q.get(e).ok())
-                    .map(|b| b.fixed)
+                    .map(|b| b.parent.is_none())
                     .unwrap_or(false)
         })
         .unwrap_or(false);
