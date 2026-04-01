@@ -5,9 +5,7 @@ use bevy::{
 };
 
 use crate::{
-    body::CelestialBody,
-    rocket::{PlayerRocket, Rocket},
-    MapView, DEFAULT_SCALE, G, MAP_VIEW_SCALE, PLANET_RADIUS,
+    AppState, DEFAULT_SCALE, G, MAP_VIEW_SCALE, MapView, PLANET_RADIUS, body::CelestialBody, rocket::{PlayerRocket, Rocket}
 };
 
 // HUD label — one enum covers all telemetry rows; add a variant to add a new row
@@ -21,7 +19,11 @@ pub enum HudLabel {
 #[derive(Component)]
 pub struct HudFps;
 
-pub fn hud_init(commands: &mut Commands) {
+pub fn hud_init(mut commands: Commands) {
+
+    // Camera – start centered on the rocket
+    commands.spawn((Camera2d, Transform::from_xyz(0., PLANET_RADIUS, 0.)));
+
     let mono = TextFont {
         font_size: 18.0,
         ..default()
@@ -307,5 +309,23 @@ pub fn update_hud(
                 }
             }
         });
+    }
+}
+
+// ── Plugin ────────────────────────────────────────────────────────────────────
+
+pub struct HudPlugin;
+
+impl Plugin for HudPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, hud_init);
+        app.add_systems(
+            Update,
+            (update_trajectory, update_hud, update_fps).run_if(in_state(AppState::Playing)),
+        );
+        app.add_systems(
+            FixedUpdate,
+            (follow_camera,).run_if(in_state(AppState::Playing)),
+        );
     }
 }

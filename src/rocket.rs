@@ -2,8 +2,8 @@ use avian2d::prelude::*;
 use bevy::prelude::*;
 
 use crate::{
-    body::CelestialBody, FUEL_RATE, G, LANDING_MAX_SPEED, PLANET_RADIUS, PLANET_SURFACE_GRAVITY,
-    ROT_FORCE,
+    body::{CelestialBody, PlanetEntity},
+    AppState, FUEL_RATE, G, LANDING_MAX_SPEED, PLANET_RADIUS, PLANET_SURFACE_GRAVITY, ROT_FORCE,
 };
 
 const FUEL_TANK_SIZE: Vec2 = Vec2::new(12.0, 16.0);
@@ -237,12 +237,11 @@ pub fn animate_sprite(
     }
 }
 
-// loads rocket assets
 pub fn rocket_init(
-    commands: &mut Commands,
-    asset_server: &AssetServer,
-    texture_atlas_layouts: &mut Assets<TextureAtlasLayout>,
-    planet: Entity,
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+    planet_entity: Res<PlanetEntity>,
 ) {
     let texture = asset_server.load("space-io.png");
     let layout = TextureAtlasLayout::from_grid(UVec2::splat(16), 16, 16, None, None);
@@ -284,8 +283,7 @@ pub fn rocket_init(
         },
     };
 
-    // TODO: Move this elsewhere??? (2nd stage init?)
-    spawn_default_rocket(commands, &rocket_assets, &planet);
+    spawn_default_rocket(&mut commands, &rocket_assets, &planet_entity.0);
 
     commands.insert_resource(rocket_assets);
 }
@@ -505,5 +503,24 @@ pub fn update_exhaust(
             }
             _ => {}
         }
+    }
+}
+
+// ── Plugin ────────────────────────────────────────────────────────────────────
+
+pub struct RocketPlugin;
+
+impl Plugin for RocketPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(OnEnter(AppState::Playing), rocket_init)
+            .add_systems(
+                FixedUpdate,
+                physics_step.run_if(in_state(AppState::Playing)),
+            )
+            .add_systems(
+                Update,
+                (collision_handler, update_exhaust, animate_sprite)
+                    .run_if(in_state(AppState::Playing)),
+            );
     }
 }

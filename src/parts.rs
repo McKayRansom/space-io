@@ -4,6 +4,8 @@ use bevy::{
 };
 use serde::Deserialize;
 
+use crate::AppState;
+
 // ── Part data definitions (loaded from assets/parts.ron) ──────────────────────
 
 #[derive(Deserialize, Clone, Debug)]
@@ -86,11 +88,13 @@ pub fn build_parts_catalog(
     mut commands: Commands,
     handle: Res<PartsConfigHandle>,
     assets: Res<Assets<PartsConfig>>,
+    mut next_state: ResMut<NextState<AppState>>,
 ) {
     if let Some(config) = assets.get(&handle.0) {
         info!("Parts loaded: {} part(s)", config.parts.len());
         commands.insert_resource(PartsCatalog(config.parts.clone()));
         commands.remove_resource::<PartsConfigHandle>();
+        next_state.set(AppState::Playing);
     }
 }
 

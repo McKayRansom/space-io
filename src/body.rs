@@ -1,7 +1,9 @@
-
 use bevy::prelude::*;
 
-use crate::G;
+use crate::*;
+
+#[derive(Resource)]
+pub struct PlanetEntity(pub Entity);
 
 #[derive(Component)]
 pub struct CelestialBody {
@@ -48,7 +50,77 @@ impl CelestialBody {
     // }
 }
 
-pub fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mut CelestialBody)>) {
+fn setup_bodies(
+    mut commands: Commands,
+    mut meshes: ResMut<Assets<Mesh>>,
+    mut materials: ResMut<Assets<ColorMaterial>>,
+    shader_mats: Res<CelestialMaterials>,
+) {
+    // ── Stars ──────────────────────────────────────────────────────────────
+    let mut rng = rand::thread_rng();
+    for _ in 0..300 {
+        let x: f32 = rng.gen_range(-3000.0..3000.0);
+        let y: f32 = rng.gen_range(-3000.0..3000.0);
+        let r: f32 = rng.gen_range(0.5..2.0);
+        let b: f32 = rng.gen_range(0.5..1.0);
+        commands.spawn((
+            Mesh2d(meshes.add(Circle::new(r))),
+            MeshMaterial2d(materials.add(Color::srgba(b, b, b, 0.85))),
+            Transform::from_xyz(x, y, -1.0),
+        ));
+    }
+
+    #[rustfmt::skip]
+    let planet = commands
+        .spawn((
+            Mesh2d(meshes.add(Rectangle::new(PLANET_RADIUS * 2., PLANET_RADIUS * 2.))),
+            MeshMaterial2d(shader_mats.planet.clone()),
+            Transform::default(),
+            CelestialBody::new(PLANET_MASS, PLANET_RADIUS, 0.0, None, None),
+            // avian2d: static body with a circular collider for rocket landing detection
+            RigidBody::Static,
+            Collider::circle(PLANET_RADIUS),
+        ))
+        .id();
+    commands.insert_resource(PlanetEntity(planet));
+
+    #[rustfmt::skip]
+    commands.spawn((
+        Mesh2d(meshes.add(Rectangle::new(PLANET_RADIUS * 2., PLANET_RADIUS * 2.))),
+        MeshMaterial2d(shader_mats.cloud.clone()),
+        Transform::from_xyz(0., 0., 0.02),
+    ));
+
+    // Atmosphere glow ring (visual only, no physics)
+    commands.spawn((
+        Mesh2d(meshes.add(Annulus::new(PLANET_RADIUS + 1.0, PLANET_RADIUS * 1.1))),
+        MeshMaterial2d(materials.add(Color::srgba(0.4, 0.7, 1.0, 0.10))),
+        Transform::from_xyz(0., 0., 0.05),
+    ));
+
+    commands
+        .spawn((
+            Mesh2d(meshes.add(Rectangle::new(MOON_RADIUS * 2., MOON_RADIUS * 2.))),
+            MeshMaterial2d(shader_mats.moon_surface.clone()),
+            Transform::from_xyz(MOON_ORBIT, 0., 0.2),
+            CelestialBody::new(
+                MOON_MASS,
+                MOON_RADIUS,
+                MOON_ORBIT,
+                Some(planet),
+                Some(PLANET_MASS),
+            ),
+        ))
+        .with_children(|parent| {
+            parent.spawn((
+                Mesh2d(meshes.add(Rectangle::new(MOON_RADIUS * 2., MOON_RADIUS * 2.))),
+                MeshMaterial2d(shader_mats.moon_crater.clone()),
+                Transform::from_xyz(0., 0., 0.01),
+            ));
+        });
+}
+
+fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mut CelestialBody)>) {
     let dt = time.delta_secs();
 
     // Snapshot positions/masses so we can borrow mutably below
@@ -80,5 +152,19 @@ pub fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform,
         let v = body.velocity;
         tf.translation.x += v.x * dt;
         tf.translation.y += v.y * dt;
+    }
+}
+
+// ── Plugin ────────────────────────────────────────────────────────────────────
+
+pub struct CelestialBodyPlugin;
+
+impl Plugin for CelestialBodyPlugin {
+    fn build(&self, app: &mut App) {
+        app.add_systems(Startup, setup_bodies);
+        app.add_systems(
+            FixedUpdate,
+            (update_bodies,).run_if(in_state(AppState::Playing)),
+        );
     }
 }
