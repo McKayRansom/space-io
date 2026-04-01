@@ -1,8 +1,14 @@
-
 use avian2d::prelude::LinearVelocity;
-use bevy::{diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin}, prelude::*};
+use bevy::{
+    diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
+    prelude::*,
+};
 
-use crate::{DEFAULT_SCALE, G, MAP_VIEW_SCALE, MapView, PLANET_RADIUS, body::CelestialBody, rocket::{FuelTank, PlayerRocket, Rocket, RocketStage}};
+use crate::{
+    body::CelestialBody,
+    rocket::{PlayerRocket, Rocket},
+    MapView, DEFAULT_SCALE, G, MAP_VIEW_SCALE, PLANET_RADIUS,
+};
 
 // HUD label — one enum covers all telemetry rows; add a variant to add a new row
 #[derive(Component, PartialEq, Eq)]
@@ -104,7 +110,6 @@ pub fn hud_init(commands: &mut Commands) {
         },
     ));
 }
-
 
 pub fn update_fps(diagnostics: Res<DiagnosticsStore>, mut q: Query<&mut Text, With<HudFps>>) {
     let Ok(mut text) = q.get_single_mut() else {
@@ -240,7 +245,6 @@ pub fn update_trajectory(
     }
 }
 
-
 pub fn follow_camera(
     rocket_q: Query<&Transform, (With<Rocket>, With<PlayerRocket>)>,
     mut cam_q: Query<&mut Transform, (With<Camera2d>, Without<Rocket>)>,
@@ -272,8 +276,6 @@ pub fn follow_camera(
 
 pub fn update_hud(
     rocket_q: Query<(&Transform, &LinearVelocity, &Rocket), With<PlayerRocket>>,
-    stage_q: Query<&Children, With<RocketStage>>,
-    tank_q: Query<&FuelTank>,
     mut hud_q: Query<(&HudLabel, &mut Text)>,
 ) {
     let Ok((tf, velocity, rocket)) = rocket_q.get_single() else {
@@ -281,17 +283,6 @@ pub fn update_hud(
     };
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);
     let speed = velocity.length();
-    // let
-    let (stage_fuel, stage_capacity): (f32, f32) = rocket
-        .active_stage
-        .and_then(|se| stage_q.get(se).ok())
-        .map(|children| {
-            children
-                .iter()
-                .filter_map(|&c| tank_q.get(c).ok())
-                .fold((0.0, 0.0), |(f, cap), t| (f + t.fuel, cap + t.capacity))
-        })
-        .unwrap_or((0.0, 1.0));
 
     for (label, mut text) in &mut hud_q {
         *text = Text::new(match label {
@@ -299,7 +290,8 @@ pub fn update_hud(
             HudLabel::Vel => format!("VEL  {:>8.1} m/s", speed),
             HudLabel::Fuel => {
                 const W: usize = 10;
-                let filled = ((stage_fuel / stage_capacity) * W as f32).round() as usize;
+                let filled =
+                    ((rocket.stage_fuel / rocket.stage_capacity) * W as f32).round() as usize;
                 let filled = filled.min(W);
                 format!("FUEL [{}{}]", "=".repeat(filled), " ".repeat(W - filled))
             }
@@ -308,7 +300,7 @@ pub fn update_hud(
                     "CRASHED  –  press R to reset".to_string()
                 } else if rocket.landed {
                     "LANDED  –  W/↑ to launch\nfoobar".to_string()
-                } else if rocket.active_stage.is_some() && stage_fuel <= 0.0 {
+                } else if rocket.active_stage.is_some() && rocket.stage_fuel <= 0.0 {
                     "OUT OF FUEL  –  SPACE to stage".to_string()
                 } else {
                     String::new()
@@ -317,4 +309,3 @@ pub fn update_hud(
         });
     }
 }
-

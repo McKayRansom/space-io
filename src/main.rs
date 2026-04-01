@@ -7,7 +7,7 @@
 //!   Space/↑/W  main engine  (thrust)
 //!   R          reset to orbit
 
-use avian2d::{prelude::*, sync::ancestor_marker::AncestorMarker};
+use avian2d::prelude::*;
 use bevy::{
     diagnostic::FrameTimeDiagnosticsPlugin,
     prelude::*,
@@ -27,6 +27,8 @@ mod player;
 use player::*;
 mod editor;
 use editor::*;
+mod parts;
+use parts::*;
 
 // ── Physics constants  ─────────────────────────
 const G: f32 = 20.0;
@@ -79,21 +81,22 @@ fn main() {
                 .set(ImagePlugin::default_nearest()),
         )
         .add_plugins(ShaderPlugin)
+        .add_plugins(PartsPlugin)
         .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.08)))
         .insert_resource(MapView::default())
-        .add_systems(Startup, (setup, apply_deferred, relayout_rocket).chain())
+        .add_systems(Startup, setup)
         .add_systems(
             Update,
             (
                 handle_input,
-                handle_editor_input,
+                // handle_editor_input,
                 update_bodies,
                 // physics_step,
                 // handle_planet_collision,
                 // check_surface_contact,
                 // relayout_rocket,
                 collision_handler,
-                rebuild_editor_ui,
+                // rebuild_editor_ui,
                 update_trajectory,
                 update_exhaust,
                 animate_sprite,

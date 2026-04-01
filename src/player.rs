@@ -1,7 +1,5 @@
-
-use bevy::prelude::*;
 use super::*;
-
+use bevy::prelude::*;
 
 pub fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
@@ -18,6 +16,7 @@ pub fn handle_input(
         With<PlayerRocket>,
     >,
     mut map_view: ResMut<MapView>,
+    mut part_q: Query<(&GlobalTransform, &mut Transform, &Parent), (With<RocketPart>, Without<Rocket>, Without<CelestialBody>)>,
     bodies: Query<(Entity, &Transform, &CelestialBody), Without<Rocket>>,
 ) {
     let Ok((rocket_entity, mut tf, mut rocket, mut lin_vel)) = q.get_single_mut() else {
@@ -53,12 +52,14 @@ pub fn handle_input(
     if keys.just_pressed(KeyCode::Space) {
         // Note: This does not change the transform, not sure if that is an issue or not, now the stage's origin may be in a weird place
         if let Some(current) = rocket.active_stage.take() {
+            let (global_transform, mut part_transform, parent) = part_q.get_mut(current).unwrap();
+            *part_transform = Transform::default();
             let nose = tf.local_y().truncate();
             let sep_vel = **lin_vel - STAGE_SEP_VEL * nose;
             commands
                 .spawn((
                     Visibility::default(),
-                    tf.clone(),
+                    global_transform.clone(),
                     Rocket {
                         active_stage: Some(current),
                         ..Default::default()
@@ -73,15 +74,18 @@ pub fn handle_input(
                     // entity (which already has the marker), so it never reaches this new
                     // root. We insert it manually so the next FixedPostUpdate correctly
                     // re-registers all descendant colliders to this rigid body.
-                    AncestorMarker::<ColliderMarker>::default(),
+                    // AncestorMarker::<ColliderMarker>::default(),
                 ))
                 .add_child(current);
+
+            rocket.active_stage = if !rocket.stage_queue.is_empty() {
+                Some(rocket.stage_queue.remove(0))
+            } else {
+                None
+            };
+            rocket.tail = Some(parent.get());
         }
-        rocket.active_stage = if !rocket.stage_queue.is_empty() {
-            Some(rocket.stage_queue.remove(0))
-        } else {
-            None
-        };
+
         return;
     }
 

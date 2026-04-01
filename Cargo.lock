@@ -4223,6 +4223,8 @@ dependencies = [
  "avian2d",
  "bevy",
  "rand",
+ "ron",
+ "serde",
 ]
 
 [[package]]
