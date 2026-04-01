@@ -232,9 +232,8 @@ impl Material2d for MoonCraterMaterial {
 //   Surface [0]=light grey-blue, [1]=mid blue-grey, [2]=dark blue-grey
 //   Craters [0]=mid blue-grey (lit), [1]=dark blue-grey (shadow)
 #[rustfmt::skip]
-pub fn moon_mats(moon_surf_mat: &mut Assets<MoonSurfaceMaterial>, moon_crat_mat: &mut Assets<MoonCraterMaterial>) -> (Handle<MoonSurfaceMaterial>, Handle<MoonCraterMaterial>) {
-    let moon_seed = rand::thread_rng().gen_range(1.0f32..10.0f32);
-    (moon_surf_mat.add(MoonSurfaceMaterial {
+fn moon_surface_mat(assets: &mut Assets<MoonSurfaceMaterial>, seed: f32) -> Handle<MoonSurfaceMaterial> {
+    assets.add(MoonSurfaceMaterial {
         params: MoonSurfaceUniform {
             colors: [
                 planet_color(0.639, 0.655, 0.761), // light grey-blue (lit)
@@ -249,7 +248,7 @@ pub fn moon_mats(moon_surf_mat: &mut Assets<MoonSurfaceMaterial>, moon_crat_mat:
             light_border_1: 0.615,
             light_border_2: 0.729,
             size:           8.0,
-            seed:           moon_seed,
+            seed,
             octaves:        4,
             time:           0.0,
             should_dither:  1,
@@ -257,8 +256,12 @@ pub fn moon_mats(moon_surf_mat: &mut Assets<MoonSurfaceMaterial>, moon_crat_mat:
             _pad1:          0,
             _pad2:          0,
         },
-    }),
-    moon_crat_mat.add(MoonCraterMaterial {
+    })
+}
+
+#[rustfmt::skip]
+fn moon_crater_mat(assets: &mut Assets<MoonCraterMaterial>, seed: f32) -> Handle<MoonCraterMaterial> {
+    assets.add(MoonCraterMaterial {
         params: MoonCraterUniform {
             colors: [
                 planet_color(0.298, 0.408, 0.522), // mid blue-grey (crater lit)
@@ -270,13 +273,13 @@ pub fn moon_mats(moon_surf_mat: &mut Assets<MoonSurfaceMaterial>, moon_crat_mat:
             time_speed:     0.001,
             light_border:   0.465,
             size:           5.0,
-            seed:           moon_seed,
+            seed,
             time:           0.0,
             _pad0:          0,
             _pad1:          0,
             _pad2:          0,
         },
-    }))
+    })
 }
 
 /// Convert an sRGB channel value to linear light (matches Godot's source_color hint behaviour).
@@ -317,6 +320,29 @@ fn animate_planet_time(
     }
 }
 
+/// Handles to all custom shader materials, created at startup via [`FromWorld`].
+/// Add new material handles here instead of threading `ResMut<Assets<XxxMaterial>>`
+/// through `setup` in `main.rs`.
+#[derive(Resource)]
+pub struct CelestialMaterials {
+    pub planet: Handle<PlanetMaterial>,
+    pub cloud: Handle<CloudMaterial>,
+    pub moon_surface: Handle<MoonSurfaceMaterial>,
+    pub moon_crater: Handle<MoonCraterMaterial>,
+}
+
+impl FromWorld for CelestialMaterials {
+    fn from_world(world: &mut World) -> Self {
+        let planet = planet_mat(&mut world.resource_mut::<Assets<PlanetMaterial>>());
+        let cloud = cloud_mat(&mut world.resource_mut::<Assets<CloudMaterial>>());
+        // Share the same seed between surface and crater layers.
+        let moon_seed = rand::thread_rng().gen_range(1.0f32..10.0f32);
+        let moon_surface = moon_surface_mat(&mut world.resource_mut::<Assets<MoonSurfaceMaterial>>(), moon_seed);
+        let moon_crater = moon_crater_mat(&mut world.resource_mut::<Assets<MoonCraterMaterial>>(), moon_seed);
+        Self { planet, cloud, moon_surface, moon_crater }
+    }
+}
+
 pub struct ShaderPlugin;
 
 impl Plugin for ShaderPlugin {
@@ -327,6 +353,9 @@ impl Plugin for ShaderPlugin {
             Material2dPlugin::<MoonSurfaceMaterial>::default(),
             Material2dPlugin::<MoonCraterMaterial>::default(),
         ))
+        // Material2dPlugins above have already registered Assets<T>, so FromWorld
+        // can safely create handles immediately.
+        .init_resource::<CelestialMaterials>()
         .add_systems(Update, animate_planet_time);
     }
 }

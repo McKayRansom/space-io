@@ -115,10 +115,7 @@ fn setup(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     mut materials: ResMut<Assets<ColorMaterial>>,
-    mut planet_materials: ResMut<Assets<PlanetMaterial>>,
-    mut cloud_materials: ResMut<Assets<CloudMaterial>>,
-    mut moon_surface_materials: ResMut<Assets<MoonSurfaceMaterial>>,
-    mut moon_crater_materials: ResMut<Assets<MoonCraterMaterial>>,
+    shader_mats: Res<CelestialMaterials>,
     asset_server: Res<AssetServer>,
     mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
 ) {
@@ -149,7 +146,7 @@ fn setup(
     let planet = commands
         .spawn((
             Mesh2d(meshes.add(Rectangle::new(PLANET_RADIUS * 2., PLANET_RADIUS * 2.))),
-            MeshMaterial2d(planet_mat(&mut planet_materials)),
+            MeshMaterial2d(shader_mats.planet.clone()),
             Transform::default(),
             CelestialBody::new(PLANET_MASS, PLANET_RADIUS, 0.0, None, None),
             // avian2d: static body with a circular collider for rocket landing detection
@@ -161,7 +158,7 @@ fn setup(
     #[rustfmt::skip]
     commands.spawn((
         Mesh2d(meshes.add(Rectangle::new(PLANET_RADIUS * 2., PLANET_RADIUS * 2.))),
-        MeshMaterial2d(cloud_mat(&mut cloud_materials)),
+        MeshMaterial2d(shader_mats.cloud.clone()),
         Transform::from_xyz(0., 0., 0.02),
     ));
 
@@ -172,11 +169,10 @@ fn setup(
         Transform::from_xyz(0., 0., 0.05),
     ));
 
-    let (moon_surface_mat, moon_crater_mat) = moon_mats(&mut moon_surface_materials, &mut moon_crater_materials);
     commands
         .spawn((
             Mesh2d(meshes.add(Rectangle::new(MOON_RADIUS * 2., MOON_RADIUS * 2.))),
-            MeshMaterial2d(moon_surface_mat),
+            MeshMaterial2d(shader_mats.moon_surface.clone()),
             Transform::from_xyz(MOON_ORBIT, 0., 0.2),
             CelestialBody::new(
                 MOON_MASS,
@@ -189,7 +185,7 @@ fn setup(
         .with_children(|parent| {
             parent.spawn((
                 Mesh2d(meshes.add(Rectangle::new(MOON_RADIUS * 2., MOON_RADIUS * 2.))),
-                MeshMaterial2d(moon_crater_mat),
+                MeshMaterial2d(shader_mats.moon_crater.clone()),
                 Transform::from_xyz(0., 0., 0.01),
             ));
         });
