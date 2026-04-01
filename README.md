@@ -59,6 +59,13 @@ cargo run
 - [ ] Particle effects for atmosphere, engines
 - [ ] Terrain for planets
 
+
+## IDEAS
+
+- Procedural parts: Lots of mods did this for KSP, and people were hoping this would be in KSP 2. Should actually make my life a lot easier if done correctly!
+- Re-parent rockets! Instead of trying to calculate the correct layout for the entire rocket, just have a tree, the "root" and then each part just has it's part size as it's offset from its parent. This is clearly what KSP does. 
+- Pixel rockets: Have people draw their rockets (full customizable) and draw the layout of fuel tanks/etc...
+
 ## Possible TODO
 
 ### Gameplay
