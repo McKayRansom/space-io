@@ -28,10 +28,10 @@ use parts::*;
 use crate::editor::EditorPlugin;
 
 // ── Physics constants  ─────────────────────────
-const G: f32 = 20.0;
-const PLANET_MASS: f32 = 5.0e6; // G·M = 2·10⁷
+const G: f32 = 10.0;
 const PLANET_RADIUS: f32 = 3400.0;
-const PLANET_SURFACE_GRAVITY: f32 = G * PLANET_MASS / (PLANET_RADIUS * PLANET_RADIUS);
+const PLANET_SURFACE_GRAVITY: f32 = 10.0;
+const PLANET_MASS: f32 = PLANET_SURFACE_GRAVITY * (PLANET_RADIUS * PLANET_RADIUS) / G;
 const ROT_FORCE: f32 = 3000.0; // no idea on the units on this
 
 const MOON_SURFACE_GRAVITY: f32 = PLANET_SURFACE_GRAVITY / 6.0;
