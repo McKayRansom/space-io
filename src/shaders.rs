@@ -8,6 +8,8 @@ use bevy::{
 };
 use rand::Rng;
 
+use crate::terrain::{BodyTerrainParams, OrbitViewMesh, TerrainViewMesh};
+
 #[derive(Resource)]
 pub struct Materials {
     planet: Assets<PlanetMaterial>,
@@ -381,6 +383,84 @@ pub struct CelestialMaterials {
     pub moon_heights: Vec<f32>,
 }
 
+impl CelestialMaterials {
+    pub fn spawn_shader(
+        &self,
+        commands: &mut Commands,
+        mesh: Handle<Mesh>,
+        shader: PlanetShaders,
+        terrain_params: Option<BodyTerrainParams>,
+    ) -> Entity {
+        match shader {
+            PlanetShaders::Planet => commands
+                .spawn((
+                    Mesh2d(mesh.clone()),
+                    MeshMaterial2d(self.planet.clone()),
+                    OrbitViewMesh,
+                    Visibility::Hidden,
+                    Transform::default(),
+                ))
+                .id(),
+            PlanetShaders::Cloud => commands
+                .spawn((
+                    Mesh2d(mesh.clone()),
+                    MeshMaterial2d(self.cloud.clone()),
+                    OrbitViewMesh,
+                    Visibility::Hidden,
+                    Transform::default(),
+                ))
+                .id(),
+            PlanetShaders::MoonSurface => commands
+                .spawn((
+                    Mesh2d(mesh.clone()),
+                    MeshMaterial2d(self.moon_surface.clone()),
+                    OrbitViewMesh,
+                    Visibility::Hidden,
+                    Transform::default(),
+                ))
+                .id(),
+            PlanetShaders::MoonTerrain => commands
+                .spawn((
+                    Mesh2d(mesh.clone()),
+                    MeshMaterial2d(self.moon_terrain.clone()),
+                    TerrainViewMesh,
+                    Visibility::Visible,
+                    Transform::default(),
+                    terrain_params.unwrap(),
+                ))
+                .id(),
+            PlanetShaders::MoonCrater => commands
+                .spawn((
+                    Mesh2d(mesh.clone()),
+                    MeshMaterial2d(self.moon_crater.clone()),
+                    OrbitViewMesh,
+                    Visibility::Hidden,
+                    Transform::from_xyz(0., 0., 0.01),
+                ))
+                .id(),
+            PlanetShaders::Terrain => commands
+                .spawn((
+                    Mesh2d(mesh),
+                    MeshMaterial2d(self.planet_terrain.clone()),
+                    TerrainViewMesh,
+                    Visibility::Visible,
+                    Transform::default(),
+                    terrain_params.unwrap(),
+                ))
+                .id(),
+        }
+    }
+}
+
+pub enum PlanetShaders {
+    Planet,
+    Cloud,
+    MoonSurface,
+    MoonTerrain,
+    MoonCrater,
+    Terrain,
+}
+
 impl FromWorld for CelestialMaterials {
     fn from_world(world: &mut World) -> Self {
         use crate::terrain::{generate_heightmap, heightmap_to_image};
@@ -430,15 +510,23 @@ impl FromWorld for CelestialMaterials {
                 },
             })
         };
-        let planet_terrain =
-            terrain_planet_mat(&mut world.resource_mut::<Assets<TerrainMaterial>>(), planet_img);
+        let planet_terrain = terrain_planet_mat(
+            &mut world.resource_mut::<Assets<TerrainMaterial>>(),
+            planet_img,
+        );
         let cloud = cloud_mat(&mut world.resource_mut::<Assets<CloudMaterial>>());
-        let moon_surface =
-            moon_surface_mat(&mut world.resource_mut::<Assets<MoonSurfaceMaterial>>(), moon_seed);
-        let moon_crater =
-            moon_crater_mat(&mut world.resource_mut::<Assets<MoonCraterMaterial>>(), moon_seed);
-        let moon_terrain =
-            terrain_moon_mat(&mut world.resource_mut::<Assets<TerrainMaterial>>(), moon_img);
+        let moon_surface = moon_surface_mat(
+            &mut world.resource_mut::<Assets<MoonSurfaceMaterial>>(),
+            moon_seed,
+        );
+        let moon_crater = moon_crater_mat(
+            &mut world.resource_mut::<Assets<MoonCraterMaterial>>(),
+            moon_seed,
+        );
+        let moon_terrain = terrain_moon_mat(
+            &mut world.resource_mut::<Assets<TerrainMaterial>>(),
+            moon_img,
+        );
 
         Self {
             planet,

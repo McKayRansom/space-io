@@ -11,10 +11,11 @@ pub struct MoonEntity(pub Entity);
 #[derive(Component)]
 pub struct CelestialBody {
     pub mass: f32,
-    pub _radius: f32,
+    pub radius: f32,
     pub velocity: Vec2,
     pub parent: Option<Entity>, // we don't want to parent using Bevy, because we want seprate physics objects, etc...
     pub soi: Option<f32>,       // radisu of the sphere of influence
+    orbital_radius: f32,
 }
 
 impl CelestialBody {
@@ -27,7 +28,7 @@ impl CelestialBody {
     ) -> Self {
         let body = Self {
             mass,
-            _radius: radius,
+            radius,
             // assume starting at +x for now
             velocity: if let Some(parent_mass) = parent_mass {
                 Vec2::new(0., (G * parent_mass / orbital_radius).sqrt())
@@ -38,6 +39,7 @@ impl CelestialBody {
             // cheat and assume orbital_radius instead of semi-major axis (a)
             soi: parent_mass
                 .map(|parent_mass| orbital_radius * (mass / parent_mass).powf(2.0 / 5.0)),
+            orbital_radius,
         };
         // println!("Body radius: {} soi: {}", radius, body.soi.unwrap_or(f32::MAX));
         body
@@ -51,6 +53,82 @@ impl CelestialBody {
     //     // let dist = dist_sq.sqrt();
     //     G * self.mass / dist_sq
     // }
+}
+
+pub struct BodyShaderParams {
+    map_shader: PlanetShaders,
+    terrain: PlanetShaders,
+    map_shader_2: Option<PlanetShaders>,
+}
+
+pub fn spawn_body(
+    commands: &mut Commands,
+    meshes: &mut Assets<Mesh>,
+    shader_mats: &CelestialMaterials,
+    body: CelestialBody,
+    terrain_params: BodyTerrainParams,
+    shader_params: BodyShaderParams,
+) -> Entity {
+    let planet_mesh = meshes.add(Rectangle::new(body.radius * 2.0, body.radius * 2.0));
+    // planet terrain mesh is slightly bigger...
+    let planet_terrain_mesh = meshes.add(Rectangle::new(
+        (body.radius + terrain_params.height_scale) * 2.0,
+        (body.radius + terrain_params.height_scale) * 2.0,
+    ));
+
+    let planet_terrain = shader_mats.spawn_shader(
+        commands,
+        planet_terrain_mesh,
+        shader_params.terrain,
+        Some(terrain_params),
+    );
+    let planet_map_view = shader_mats.spawn_shader(
+        commands,
+        planet_mesh.clone(),
+        shader_params.map_shader,
+        None,
+    );
+
+    let planet_map_view_2 = shader_params
+        .map_shader_2
+        .map(|shader| shader_mats.spawn_shader(commands, planet_mesh, shader, None));
+
+    let mut cmds = commands.spawn((
+        Visibility::default(),
+        Transform::from_xyz(body.orbital_radius, 0.0, 0.0),
+        Collider::circle(body.radius),
+        body,
+        // avian2d: circle collider stays as backstop; terrain polyline is primary
+        RigidBody::Static,
+    ));
+
+    cmds.add_children(&[planet_terrain, planet_map_view]);
+
+    if let Some(child) = planet_map_view_2 {
+        cmds.add_child(child);
+    }
+
+    cmds.id()
+
+    // Planet terrain mesh (close-up view, visible by default)
+
+    // Cloud layer — orbit view only
+    // commands.spawn((
+    //     Mesh2d(meshes.add(Rectangle::new(PLANET_RADIUS * 2., PLANET_RADIUS * 2.))),
+    //     MeshMaterial2d(shader_mats.cloud.clone()),
+    //     OrbitViewMesh,
+    //     Visibility::Hidden,
+    //     Transform::from_xyz(0., 0., 0.02),
+    // ));
+
+    // Atmosphere glow ring — orbit view only (visual, no physics)
+    // commands.spawn((
+    //     Mesh2d(meshes.add(Annulus::new(PLANET_RADIUS + 1.0, PLANET_RADIUS * 1.1))),
+    //     MeshMaterial2d(materials.add(Color::srgba(0.4, 0.7, 1.0, 0.10))),
+    //     OrbitViewMesh,
+    //     Visibility::Hidden,
+    //     Transform::from_xyz(0., 0., 0.05),
+    // ));
 }
 
 fn setup_bodies(
@@ -74,106 +152,50 @@ fn setup_bodies(
     }
 
     // ── Planet ─────────────────────────────────────────────────────────────────
-    // The planet entity holds physics + the orbit-view mesh (hidden by default).
-    // A separate terrain mesh entity holds the close-up view (visible by default).
-    // MapView(false) is the default, so terrain meshes start visible.
-    let planet_mesh = meshes.add(Rectangle::new(PLANET_RADIUS * 2.0 / 0.8, PLANET_RADIUS * 2.0 / 0.8));
-
-    #[rustfmt::skip]
-    let planet = commands
-        .spawn((
-            Mesh2d(planet_mesh.clone()),
-            MeshMaterial2d(shader_mats.planet.clone()),
-            OrbitViewMesh,
-            Visibility::Hidden, // hidden in default terrain view
-            Transform::default(),
-            CelestialBody::new(PLANET_MASS, PLANET_RADIUS, 0.0, None, None),
-            // avian2d: circle collider stays as backstop; terrain polyline is primary
-            RigidBody::Static,
-            Collider::circle(PLANET_RADIUS),
-            BodyTerrainParams {
-                base_radius: PLANET_RADIUS,
-                height_scale: (PLANET_RADIUS / 0.8) * 0.2,
-                heights: shader_mats.planet_heights.clone(),
-            },
-        ))
-        .id();
+    let heights = shader_mats.planet_heights.clone(); // TODO: Why is this here, can we generate this within below?
+    let planet = spawn_body(
+        &mut commands,
+        &mut meshes,
+        &shader_mats,
+        CelestialBody::new(PLANET_MASS, PLANET_RADIUS, 0.0, None, None),
+        BodyTerrainParams {
+            base_radius: PLANET_RADIUS,
+            height_scale: (PLANET_RADIUS / 0.8) * 0.2,
+            heights: heights,
+        },
+        BodyShaderParams {
+            map_shader: PlanetShaders::Planet,
+            map_shader_2: Some(PlanetShaders::Cloud),
+            terrain: PlanetShaders::Terrain,
+        },
+    );
     commands.insert_resource(PlanetEntity(planet));
 
-    // Planet terrain mesh (close-up view, visible by default)
-    commands.spawn((
-        Mesh2d(planet_mesh),
-        MeshMaterial2d(shader_mats.planet_terrain.clone()),
-        TerrainViewMesh,
-        Visibility::Visible,
-        Transform::default(),
-    ));
-
-    // Cloud layer — orbit view only
-    commands.spawn((
-        Mesh2d(meshes.add(Rectangle::new(PLANET_RADIUS * 2., PLANET_RADIUS * 2.))),
-        MeshMaterial2d(shader_mats.cloud.clone()),
-        OrbitViewMesh,
-        Visibility::Hidden,
-        Transform::from_xyz(0., 0., 0.02),
-    ));
-
-    // Atmosphere glow ring — orbit view only (visual, no physics)
-    commands.spawn((
-        Mesh2d(meshes.add(Annulus::new(PLANET_RADIUS + 1.0, PLANET_RADIUS * 1.1))),
-        MeshMaterial2d(materials.add(Color::srgba(0.4, 0.7, 1.0, 0.10))),
-        OrbitViewMesh,
-        Visibility::Hidden,
-        Transform::from_xyz(0., 0., 0.05),
-    ));
-
     // ── Moon ───────────────────────────────────────────────────────────────────
-    let moon_mesh = meshes.add(Rectangle::new(MOON_RADIUS * 2., MOON_RADIUS * 2.));
-
-    let moon = commands
-        .spawn((
-            Mesh2d(moon_mesh.clone()),
-            MeshMaterial2d(shader_mats.moon_surface.clone()),
-            OrbitViewMesh,
-            Visibility::Hidden,
-            Transform::from_xyz(MOON_ORBIT, 0., 0.2),
-            CelestialBody::new(
-                MOON_MASS,
-                MOON_RADIUS,
-                MOON_ORBIT,
-                Some(planet),
-                Some(PLANET_MASS),
-            ),
-            BodyTerrainParams {
-                base_radius: MOON_RADIUS,
-                height_scale: MOON_RADIUS * 0.25,
-                heights: shader_mats.moon_heights.clone(),
-            },
-        ))
-        .with_children(|parent| {
-            // Moon crater layer — orbit view only
-            parent.spawn((
-                Mesh2d(meshes.add(Rectangle::new(MOON_RADIUS * 2., MOON_RADIUS * 2.))),
-                MeshMaterial2d(shader_mats.moon_crater.clone()),
-                OrbitViewMesh,
-                Visibility::Hidden,
-                Transform::from_xyz(0., 0., 0.01),
-            ));
-            // Moon terrain mesh — close-up view
-            parent.spawn((
-                Mesh2d(moon_mesh.clone()),
-                MeshMaterial2d(shader_mats.moon_terrain.clone()),
-                TerrainViewMesh,
-                Visibility::Visible,
-                Transform::from_xyz(0., 0., 0.0),
-            ));
-        })
-        .id();
-
+    let heights = shader_mats.moon_heights.clone(); // TODO: Why is this here, can we generate this within below?
+    let moon = spawn_body(
+        &mut commands,
+        &mut meshes,
+        &shader_mats,
+        CelestialBody::new(MOON_MASS, MOON_RADIUS, MOON_ORBIT, Some(planet), Some(PLANET_MASS)),
+        BodyTerrainParams {
+            base_radius: MOON_RADIUS,
+            height_scale: (MOON_RADIUS / 0.8) * 0.2,
+            heights: heights,
+        },
+        BodyShaderParams {
+            map_shader: PlanetShaders::MoonSurface,
+            map_shader_2: Some(PlanetShaders::MoonCrater),
+            terrain: PlanetShaders::MoonTerrain,
+        },
+    );
     commands.insert_resource(MoonEntity(moon));
 }
 
-pub fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mut CelestialBody)>) {
+pub fn update_bodies(
+    time: Res<Time>,
+    mut bodies: Query<(Entity, &mut Transform, &mut CelestialBody)>,
+) {
     let dt = time.delta_secs();
 
     // Snapshot positions/masses so we can borrow mutably below
