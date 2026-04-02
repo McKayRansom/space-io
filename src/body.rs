@@ -93,7 +93,7 @@ fn setup_bodies(
             Collider::circle(PLANET_RADIUS),
             BodyTerrainParams {
                 base_radius: PLANET_RADIUS,
-                height_scale: PLANET_RADIUS * 0.03,
+                height_scale: (PLANET_RADIUS / 0.8) * 0.2,
                 heights: shader_mats.planet_heights.clone(),
             },
         ))

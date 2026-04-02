@@ -31,6 +31,8 @@ pub fn generate_heightmap(size: f32, seed: f32, octaves: i32) -> Vec<f32> {
     use std::f32::consts::{PI, TAU};
     let heights: Vec<f32> = (0..HEIGHTMAP_RESOLUTION)
         .map(|i| {
+            // For debugging: incrementing hightmap
+            // i as f32 / HEIGHTMAP_RESOLUTION as f32
             let angle = -PI + (i as f32 / HEIGHTMAP_RESOLUTION as f32) * TAU;
             let uv = Vec2::new((angle / TAU + 0.5) * size * 20.0, 0.5);
             fbm_cpu(uv, size, seed, octaves)
@@ -154,8 +156,8 @@ pub struct TerrainColliderConfig {
 impl Default for TerrainColliderConfig {
     fn default() -> Self {
         Self {
-            proximity_threshold_factor: 1.15,
-            arc_half_radians: std::f32::consts::FRAC_PI_2,
+            proximity_threshold_factor: 1.3,
+            arc_half_radians: std::f32::consts::FRAC_PI_2 / 10.0,
             num_samples: 200,
             update_angle_threshold: 0.05,
         }
@@ -295,14 +297,14 @@ impl Plugin for TerrainPlugin {
             .add_systems(
                 Update,
                 switch_terrain_materials.run_if(in_state(AppState::Playing)),
+            )
+            .add_systems(
+                FixedUpdate,
+                (update_terrain_colliders, sync_terrain_collider_to_body)
+                    .chain()
+                    .after(update_bodies)
+                    .run_if(in_state(AppState::Playing)),
             );
-            // .add_systems(
-            //     FixedUpdate,
-            //     (update_terrain_colliders, sync_terrain_collider_to_body)
-            //         .chain()
-            //         .after(update_bodies)
-            //         .run_if(in_state(AppState::Playing)),
-            // );
     }
 }
 #[cfg(test)]
@@ -310,15 +312,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn empty_unit_test_placeholder() {
+    fn heightmap_test() {
         
         let planet_seed = 1234.0;
         let moon_seed = 1234.0;
 
         // Generate heightmaps on CPU — same data goes to GPU texture and collider.
         // Low octave count → broad peaks/valleys (lunar lander feel, not fractal noise)
-        let _planet_heights = generate_heightmap(7.315, planet_seed, 2);
+        let planet_heights = generate_heightmap(7.315, planet_seed, 2);
         let _moon_heights = generate_heightmap(8.0, moon_seed, 4);
+
+        const RADIUS: f32 = 100.0;
+        const SCALE: f32 = 10.0;
+
+        let height = sample_height(0.0, RADIUS, SCALE, &planet_heights);
+
+        assert_eq!(height, planet_heights[0] * SCALE + RADIUS);
     }
 }
 

@@ -37,7 +37,7 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
     // Map UV to centered coordinates: (0,0) = center, ±1 = mesh edge
     let centered = uv - vec2<f32>(0.5);
     let r_normalized = length(centered) * 2.0;
-    let angle = atan2(centered.y, centered.x);
+    let angle = atan2(-centered.y, centered.x);
 
     let surface_r = terrain_surface_r(angle);
 
