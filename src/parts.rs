@@ -30,8 +30,7 @@ pub struct SpritesheetInfo {
 }
 
 impl PartDef {
-    pub fn sprite(&self, world: &mut World) -> Sprite {
-        let spritesheet = world.get_resource::<SpritesheetInfo>().unwrap();
+    pub fn sprite(&self, spritesheet: &SpritesheetInfo) -> Sprite {
         Sprite {
             image: spritesheet.image.clone(),
             texture_atlas: Some(TextureAtlas {
@@ -44,8 +43,7 @@ impl PartDef {
             ..Default::default()
         }
     }
-    pub fn build_anim(&self, world: &mut World) -> (Sprite, AnimationIndices, AnimationTimer) {
-        let spritesheet = world.get_resource::<SpritesheetInfo>().unwrap();
+    pub fn build_anim(&self, spritesheet: &SpritesheetInfo) -> (Sprite, AnimationIndices, AnimationTimer) {
         (
             Sprite {
                 image: spritesheet.image.clone(),

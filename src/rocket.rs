@@ -3,7 +3,7 @@ use bevy::prelude::*;
 
 use crate::{
     body::{CelestialBody, PlanetEntity},
-    parts::{PartKind, PartsCatalog},
+    parts::{PartKind, PartsCatalog, SpritesheetInfo},
     AppState, G, LANDING_MAX_SPEED, PLANET_RADIUS, ROT_FORCE,
 };
 
@@ -73,15 +73,15 @@ pub enum RocketPart {
 pub struct Exhaust;
 
 pub struct RocketBuildCommand {
-    rocket: Entity,
-    part_id: String,
+    pub rocket: Entity,
+    pub part_id: String,
 }
 
 impl Command for RocketBuildCommand {
     fn apply(self, world: &mut World) {
         let catalog = world.get_resource::<PartsCatalog>().unwrap();
         let part_def = catalog.find(&self.part_id).unwrap().clone();
-        let sprite = part_def.sprite(world);
+        let sprite = part_def.sprite(world.get_resource::<SpritesheetInfo>().unwrap());
 
         // TEMP: Assume Tail or Rocket is parent, eventually we will want to specify
         let rocket = world.get::<Rocket>(self.rocket).unwrap();
@@ -112,7 +112,8 @@ impl Command for RocketBuildCommand {
         let collide = Collider::rectangle(part_def.size.0, part_def.size.1);
 
         let exhaust = part_def.anim.map(|_anim| {
-            let (sprite, anim_indices, anim_timer) = part_def.build_anim(world);
+            let (sprite, anim_indices, anim_timer) =
+                part_def.build_anim(world.get_resource::<SpritesheetInfo>().unwrap());
             world
                 .spawn((
                     Exhaust,
@@ -165,17 +166,45 @@ pub fn spawn_default_rocket(commands: &mut Commands, planet: &Entity) {
             ExternalTorque::new(0.0).with_persistence(false),
             Restitution::new(0.4),
             Friction::new(0.9),
-        )).id();
-    
-    commands.queue(RocketBuildCommand{ rocket, part_id: "command_pod_mk1".into()});
-    commands.queue(RocketBuildCommand{ rocket, part_id: "decoupler_mk1".into()});
-    commands.queue(RocketBuildCommand{ rocket, part_id: "fuel_tank_mk1".into()});
-    commands.queue(RocketBuildCommand{ rocket, part_id: "engine_mk1".into()});
-    commands.queue(RocketBuildCommand{ rocket, part_id: "decoupler_mk1".into()});
-    commands.queue(RocketBuildCommand{ rocket, part_id: "fuel_tank_mk1".into()});
-    commands.queue(RocketBuildCommand{ rocket, part_id: "fuel_tank_mk1".into()});
-    commands.queue(RocketBuildCommand{ rocket, part_id: "engine_mk1".into()});
-    commands.queue(RocketBuildCommand{ rocket, part_id: "engine_mk1".into()});
+        ))
+        .id();
+
+    commands.queue(RocketBuildCommand {
+        rocket,
+        part_id: "command_pod_mk1".into(),
+    });
+    commands.queue(RocketBuildCommand {
+        rocket,
+        part_id: "decoupler_mk1".into(),
+    });
+    commands.queue(RocketBuildCommand {
+        rocket,
+        part_id: "fuel_tank_mk1".into(),
+    });
+    commands.queue(RocketBuildCommand {
+        rocket,
+        part_id: "engine_mk1".into(),
+    });
+    commands.queue(RocketBuildCommand {
+        rocket,
+        part_id: "decoupler_mk1".into(),
+    });
+    commands.queue(RocketBuildCommand {
+        rocket,
+        part_id: "fuel_tank_mk1".into(),
+    });
+    commands.queue(RocketBuildCommand {
+        rocket,
+        part_id: "fuel_tank_mk1".into(),
+    });
+    commands.queue(RocketBuildCommand {
+        rocket,
+        part_id: "engine_mk1".into(),
+    });
+    commands.queue(RocketBuildCommand {
+        rocket,
+        part_id: "engine_mk1".into(),
+    });
 }
 
 // ── Animation ─────────────────────────────────────────────────────────────────────
@@ -207,10 +236,7 @@ pub fn animate_sprite(
     }
 }
 
-pub fn rocket_init(
-    mut commands: Commands,
-    planet_entity: Res<PlanetEntity>,
-) {
+pub fn rocket_init(mut commands: Commands, planet_entity: Res<PlanetEntity>) {
     spawn_default_rocket(&mut commands, &planet_entity.0);
 }
 
@@ -281,7 +307,7 @@ pub fn physics_step(
             continue;
         }
         let dist = dist_sq.sqrt();
-        force += (to_body / dist) * (G * body.mass / dist_sq);
+        force += mass.value() * (to_body / dist) * (G * body.mass / dist_sq);
 
         // Thrust — read engine thrust and consume fuel from the active stage's children
         // if rocket.throttle > 0.0 || rocket.stage_active {
@@ -303,7 +329,8 @@ pub fn physics_step(
                         new_stage_capacity += tank.capacity;
                         if rocket.stage_active {
                             tank.fuel -=
-                                (rocket.stage_fuel_rate * (tank.fuel / rocket.stage_fuel) * dt).max(0.0);
+                                (rocket.stage_fuel_rate * (tank.fuel / rocket.stage_fuel) * dt)
+                                    .max(0.0);
                         }
                     }
                     RocketPart::Decoupler => {
@@ -320,7 +347,6 @@ pub fn physics_step(
                 force += nose * rocket.stage_thrust;
             }
 
-
             // update for next frame
             rocket.stage_fuel = new_stage_fuel;
             rocket.stage_capacity = new_stage_capacity;
@@ -332,7 +358,7 @@ pub fn physics_step(
             // }
         }
 
-        ext_force.set_force(force * mass.value());
+        ext_force.set_force(force);
 
         let torque: f32 = rocket.torque * ROT_FORCE;
 
@@ -345,8 +371,10 @@ pub fn physics_step(
 /// The planet has a Collider::circle so avian fires CollisionStarted events when
 /// a rocket's circle collider overlaps it. We decide land vs crash here.
 pub fn collision_handler(
+    mut rocket_q: Query<&mut Rocket, Without<CelestialBody>>,
     mut commands: Commands,
     mut collision_events: EventReader<Collision>,
+    part_q: Query<&Parent, (With<RocketPart>, Without<Rocket>)>,
     planet_q: Query<(Entity, &CelestialBody), With<RigidBody>>,
 ) {
     for Collision(contacts) in collision_events.read() {
@@ -357,6 +385,27 @@ pub fn collision_handler(
             && contacts.total_tangent_impulse < LANDING_MAX_SPEED
         {
             continue;
+        }
+
+        if let Ok(mut rocket) = rocket_q
+            .get_mut(contacts.body_entity1.unwrap())
+        {
+            if rocket.tail.is_some_and(|tail| tail == contacts.entity1) {
+                // we gotta move it
+                println!("YAY1");
+                rocket.tail = Some(part_q.get(contacts.entity1).unwrap().get());
+            }
+        }
+
+
+        if let Ok(mut rocket) = rocket_q
+            .get_mut(contacts.body_entity2.unwrap())
+        {
+            if rocket.tail.is_some_and(|tail| tail == contacts.entity2) {
+                // we gotta move it
+                println!("YAY2");
+                rocket.tail = Some(part_q.get(contacts.entity2).unwrap().get());
+            }
         }
 
         // TODO: if this is a command pod, that's game over

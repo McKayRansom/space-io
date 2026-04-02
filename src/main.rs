@@ -25,6 +25,8 @@ mod editor;
 mod parts;
 use parts::*;
 
+use crate::editor::EditorPlugin;
+
 // ── Physics constants  ─────────────────────────
 const G: f32 = 20.0;
 const PLANET_MASS: f32 = 5.0e6; // G·M = 2·10⁷
@@ -79,7 +81,15 @@ fn main() {
                 .set(ImagePlugin::default_nearest()),
         )
         .init_state::<AppState>()
-        .add_plugins((ShaderPlugin, PartsPlugin, RocketPlugin, PlayerPlugin, CelestialBodyPlugin, HudPlugin))
+        .add_plugins((
+            ShaderPlugin,
+            PartsPlugin,
+            RocketPlugin,
+            PlayerPlugin,
+            CelestialBodyPlugin,
+            HudPlugin,
+            EditorPlugin,
+        ))
         .insert_resource(ClearColor(Color::srgb(0.01, 0.01, 0.08)))
         .insert_resource(MapView::default())
         // .add_systems(PostUpdate, follow_camera.before(TransformSystem::TransformPropagate))
