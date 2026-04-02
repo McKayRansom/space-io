@@ -1,4 +1,4 @@
-use avian2d::prelude::LinearVelocity;
+use avian2d::prelude::{ComputedCenterOfMass, LinearVelocity};
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
@@ -248,13 +248,13 @@ pub fn update_trajectory(
 }
 
 pub fn follow_camera(
-    rocket_q: Query<&Transform, (With<Rocket>, With<PlayerRocket>)>,
+    rocket_q: Query<(&Transform, &ComputedCenterOfMass), (With<Rocket>, With<PlayerRocket>)>,
     mut cam_q: Query<&mut Transform, (With<Camera2d>, Without<Rocket>)>,
     mut proj_q: Query<&mut OrthographicProjection, With<Camera2d>>,
     map_view: Res<MapView>,
     time: Res<Time>,
 ) {
-    let Ok(rtf) = rocket_q.get_single() else {
+    let Ok((rtf, com)) = rocket_q.get_single() else {
         return;
     };
     let Ok(mut ctf) = cam_q.get_single_mut() else {
@@ -265,7 +265,8 @@ pub fn follow_camera(
     };
 
     let dt = time.delta_secs();
-    let target_pos = Vec3::new(rtf.translation.x, rtf.translation.y, ctf.translation.z);
+    // TODO: Not convinced this center of mass is right...
+    let target_pos = Vec3::new(rtf.translation.x + com.x, rtf.translation.y + com.y, ctf.translation.z);
     let target_scale = if map_view.0 {
         MAP_VIEW_SCALE
     } else {
@@ -302,7 +303,7 @@ pub fn update_hud(
                     "CRASHED  –  press R to reset".to_string()
                 } else if rocket.landed {
                     "LANDED  –  W/↑ to launch\nfoobar".to_string()
-                } else if rocket.active_stage.is_some() && rocket.stage_fuel <= 0.0 {
+                } else if rocket.stage_fuel <= 0.0 {
                     "OUT OF FUEL  –  SPACE to stage".to_string()
                 } else {
                     String::new()

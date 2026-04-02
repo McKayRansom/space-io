@@ -5,10 +5,13 @@ use crate::*;
 #[derive(Resource)]
 pub struct PlanetEntity(pub Entity);
 
+#[derive(Resource)]
+pub struct MoonEntity(pub Entity);
+
 #[derive(Component)]
 pub struct CelestialBody {
     pub mass: f32,
-    pub radius: f32,
+    pub _radius: f32,
     pub velocity: Vec2,
     pub parent: Option<Entity>, // we don't want to parent using Bevy, because we want seprate physics objects, etc...
     pub soi: Option<f32>,       // radisu of the sphere of influence
@@ -24,7 +27,7 @@ impl CelestialBody {
     ) -> Self {
         let body = Self {
             mass,
-            radius,
+            _radius: radius,
             // assume starting at +x for now
             velocity: if let Some(parent_mass) = parent_mass {
                 Vec2::new(0., (G * parent_mass / orbital_radius).sqrt())
@@ -98,7 +101,7 @@ fn setup_bodies(
         Transform::from_xyz(0., 0., 0.05),
     ));
 
-    commands
+    let moon = commands
         .spawn((
             Mesh2d(meshes.add(Rectangle::new(MOON_RADIUS * 2., MOON_RADIUS * 2.))),
             MeshMaterial2d(shader_mats.moon_surface.clone()),
@@ -117,7 +120,9 @@ fn setup_bodies(
                 MeshMaterial2d(shader_mats.moon_crater.clone()),
                 Transform::from_xyz(0., 0., 0.01),
             ));
-        });
+        }).id();
+    
+    commands.insert_resource(MoonEntity(moon));
 }
 
 fn update_bodies(time: Res<Time>, mut bodies: Query<(Entity, &mut Transform, &mut CelestialBody)>) {

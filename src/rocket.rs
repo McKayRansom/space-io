@@ -3,28 +3,9 @@ use bevy::prelude::*;
 
 use crate::{
     body::{CelestialBody, PlanetEntity},
-    AppState, FUEL_RATE, G, LANDING_MAX_SPEED, PLANET_RADIUS, PLANET_SURFACE_GRAVITY, ROT_FORCE,
+    parts::{PartKind, PartsCatalog},
+    AppState, G, LANDING_MAX_SPEED, PLANET_RADIUS, ROT_FORCE,
 };
-
-const FUEL_TANK_SIZE: Vec2 = Vec2::new(12.0, 16.0);
-pub const ENGINE_SIZE: Vec2 = Vec2::new(10.0, 6.0);
-const POD_BOTTOM_Y: f32 = -6.0;
-const STAGE_GAP: f32 = 0.0;
-pub const DEFAULT_FUEL_PER_TANK: f32 = 40.0;
-pub const DEFAULT_THRUST: f32 = super::PLANET_SURFACE_GRAVITY * 1.3;
-
-// ── Mass constants (arbitrary units, just need consistent ratios) ─────────────
-const POD_MASS: f32 = 5.0;
-const ENGINE_MASS: f32 = 3.0;
-const FUEL_TANK_DRY_MASS: f32 = 1.0; // empty tank shell
-const FUEL_DENSITY: f32 = 0.5; // mass per unit of fuel
-
-// ── Animation constants ────────────────────────────────────────────────────────────────
-const SPRITE_POD: usize = 0;
-const SPRITE_FUEL: usize = 16;
-const SPRITE_ENGINE: usize = 32;
-const SPRITE_EXHAUST_START: usize = 48;
-const SPRITE_EXHUAST_END: usize = 50;
 
 // ── Components ────────────────────────────────────────────────────────────────
 
@@ -36,14 +17,12 @@ pub struct Rocket {
     pub landed: bool,
     // landed_body: Option<Entity>, // which body we're on (None when flying)
     // body_offset: Vec2,            // surface-normal offset from that body's center
-    pub active_stage: Option<Entity>, // currently burning stage
-    pub stage_queue: Vec<Entity>,     // remaining stages, front = next to activate
-    pub total_mass: f32,
     pub soi_body: Option<Entity>, // which body we're in the SOI of
     pub tail: Option<Entity>,
 
     // cached-each-frame
     pub stage_thrust: f32,
+    pub stage_fuel_rate: f32,
     pub stage_fuel: f32,
     pub stage_capacity: f32,
     pub stage_active: bool,
@@ -61,9 +40,6 @@ pub struct Rocket {
 #[derive(Component)]
 pub struct PlayerRocket;
 
-#[derive(Component)]
-pub struct CommandPod;
-
 // ── Components ───────────────────────────────────────────────────────────
 pub struct FuelTank {
     pub(crate) fuel: f32,
@@ -72,127 +48,114 @@ pub struct FuelTank {
 
 pub struct Engine {
     thrust: f32, // units/s²
+    fuel_rate: f32,
     active: bool,
 }
 
 #[derive(Component)]
 pub enum RocketPart {
+    CommandPod,
+    Decoupler,
     Engine(Engine),
     FuelTank(FuelTank),
 }
 
-impl RocketPart {
-    pub fn size(&self) -> Vec2 {
-        match self {
-            RocketPart::Engine(_engine) => ENGINE_SIZE,
-            RocketPart::FuelTank(_fuel_tank) => FUEL_TANK_SIZE,
-        }
-    }
-}
+// impl RocketPart {
+//     pub fn size(&self) -> Vec2 {
+//         match self {
+//             RocketPart::Engine(_engine) => ENGINE_SIZE,
+//             RocketPart::FuelTank(_fuel_tank) => FUEL_TANK_SIZE,
+//         }
+//     }
+// }
 
 #[derive(Component)]
 pub struct Exhaust;
 
-// ── Resources ─────────────────────────────────────────────────────────────────
-#[derive(Resource)]
-pub struct RocketAssets {
-    pub command_pod_sprite: Sprite,
-    pub tank_sprite: Sprite,
-    pub engine_sprite: Sprite,
-    pub exhaust: Sprite,
+pub struct RocketBuildCommand {
+    rocket: Entity,
+    part_id: String,
 }
 
-/// Build a single rocket stage with `fuel_count` tanks, an engine, optional
-/// decoupler, and an exhaust flame. Transforms start at default — call
-/// `relayout_rocket` to position everything correctly.
-pub fn build_stage(
-    commands: &mut Commands,
-    rocket_assets: &RocketAssets,
-    // fuel_count: u32,
-    fuel_per_tank: f32,
-    thrust: f32,
-    child: Option<Entity>,
-    offset: Vec2,
-) -> (Entity, Entity) {
-    let mut engine_commands = commands.spawn((
-        rocket_assets.engine_sprite.clone(),
-        Transform::from_xyz(0.0, -FUEL_TANK_SIZE.y / 2.0, 0.0),
-        RocketPart::Engine(Engine { thrust, active: false }),
-        Collider::rectangle(12., 2.0),
-        Mass(10.0),
-    ));
-    engine_commands.with_child((
-        Exhaust,
-        rocket_assets.exhaust.clone(),
-        Transform::from_xyz(0.0, -3.0 - 8.0, 0.0),
-        AnimationIndices {
-            first: SPRITE_EXHAUST_START,
-            last: SPRITE_EXHUAST_END,
-        },
-        AnimationTimer(Timer::from_seconds(0.1, TimerMode::Repeating)),
-    ));
+impl Command for RocketBuildCommand {
+    fn apply(self, world: &mut World) {
+        let catalog = world.get_resource::<PartsCatalog>().unwrap();
+        let part_def = catalog.find(&self.part_id).unwrap().clone();
+        let sprite = part_def.sprite(world);
 
-    if let Some(child) = child {
-        engine_commands.add_child(child);
-    }
+        // TEMP: Assume Tail or Rocket is parent, eventually we will want to specify
+        let rocket = world.get::<Rocket>(self.rocket).unwrap();
+        let parent = rocket.tail.unwrap_or(self.rocket);
 
-    let engine = engine_commands.id();
+        let transform = if let Some(tail) = rocket.tail {
+            let parent_collider = world.get::<Collider>(tail).unwrap();
+            let extents = parent_collider.shape().as_cuboid().unwrap().half_extents;
+            Transform::from_xyz(0.0, -extents.y - part_def.size.1 / 2.0, 0.0)
+        } else {
+            Transform::default()
+        };
 
-    let fuel_tank = commands
-        .spawn((
-            rocket_assets.tank_sprite.clone(),
-            Transform::from_xyz(offset.x, offset.y - FUEL_TANK_SIZE.y / 2.0, 0.0),
-            RocketPart::FuelTank(FuelTank {
-                fuel: fuel_per_tank,
-                capacity: fuel_per_tank,
+        let part = match part_def.kind {
+            PartKind::CommandPod => RocketPart::CommandPod,
+            PartKind::Decoupler => RocketPart::Decoupler,
+            PartKind::FuelTank { capacity } => RocketPart::FuelTank(FuelTank {
+                fuel: capacity,
+                capacity,
             }),
-            Collider::rectangle(FUEL_TANK_SIZE.x, FUEL_TANK_SIZE.y),
-            Mass(10.0),
-        ))
-        .add_child(engine)
-        .id();
+            PartKind::Engine { thrust, fuel_rate } => RocketPart::Engine(Engine {
+                thrust,
+                fuel_rate,
+                active: false,
+            }),
+        };
 
-    (fuel_tank, engine)
+        let collide = Collider::rectangle(part_def.size.0, part_def.size.1);
+
+        let exhaust = part_def.anim.map(|_anim| {
+            let (sprite, anim_indices, anim_timer) = part_def.build_anim(world);
+            world
+                .spawn((
+                    Exhaust,
+                    Transform::from_xyz(
+                        0.0,
+                        -part_def.size.1 / 2.0 - 8.0, /* sprite size compensation */
+                        0.0,
+                    ),
+                    sprite,
+                    anim_indices,
+                    anim_timer,
+                ))
+                .id()
+        });
+
+        let mut entity = world.spawn((sprite, transform, part, collide, Mass(part_def.mass)));
+        if let Some(exhaust) = exhaust {
+            entity.add_child(exhaust);
+        }
+
+        let id = entity.id();
+        let mut parent = world.get_entity_mut(parent).unwrap();
+        parent.add_child(id);
+
+        let mut rocket = world.get_mut::<Rocket>(self.rocket).unwrap();
+        // assume we're new tail for now
+        rocket.tail = Some(id);
+
+        // println!("Spawned rocket part: {}", self.part_id);
+    }
 }
 
 /// Spawn the default two-stage rocket.
-pub fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets, planet: &Entity) {
-    let (stage1, tail1) = build_stage(
-        commands,
-        assets,
-        80.0,
-        PLANET_SURFACE_GRAVITY * 1.5,
-        None,
-        Vec2::new(0.0, -ENGINE_SIZE.y / 2.0),
-    );
-    let (stage2, _tail2) = build_stage(
-        commands,
-        assets,
-        40.0,
-        PLANET_SURFACE_GRAVITY * 1.3,
-        Some(stage1),
-        Vec2::new(0.0, POD_BOTTOM_Y),
-    );
-    let pod = commands
-        .spawn((
-            assets.command_pod_sprite.clone(),
-            Transform::default(),
-            Collider::rectangle(12., 2.0),
-            Mass(10.0),
-            CommandPod,
-        ))
-        .add_child(stage2)
-        .id();
-
-    commands
+pub fn spawn_default_rocket(commands: &mut Commands, planet: &Entity) {
+    let rocket = commands
         .spawn((
             Transform::from_xyz(0., PLANET_RADIUS * 1.05, 1.0),
             Visibility::default(),
             Rocket {
-                active_stage: Some(stage1),
-                stage_queue: vec![stage2],
+                // active_stage: Some(stage1),
+                // stage_queue: vec![stage2],
                 soi_body: Some(*planet),
-                tail: Some(tail1),
+                // tail: Some(tail1),
                 ..Default::default()
             },
             PlayerRocket,
@@ -202,21 +165,28 @@ pub fn spawn_default_rocket(commands: &mut Commands, assets: &RocketAssets, plan
             ExternalTorque::new(0.0).with_persistence(false),
             Restitution::new(0.4),
             Friction::new(0.9),
-        ))
-        .add_child(pod);
-    // .add_child(stage1)
-    // .add_child(stage2);
+        )).id();
+    
+    commands.queue(RocketBuildCommand{ rocket, part_id: "command_pod_mk1".into()});
+    commands.queue(RocketBuildCommand{ rocket, part_id: "decoupler_mk1".into()});
+    commands.queue(RocketBuildCommand{ rocket, part_id: "fuel_tank_mk1".into()});
+    commands.queue(RocketBuildCommand{ rocket, part_id: "engine_mk1".into()});
+    commands.queue(RocketBuildCommand{ rocket, part_id: "decoupler_mk1".into()});
+    commands.queue(RocketBuildCommand{ rocket, part_id: "fuel_tank_mk1".into()});
+    commands.queue(RocketBuildCommand{ rocket, part_id: "fuel_tank_mk1".into()});
+    commands.queue(RocketBuildCommand{ rocket, part_id: "engine_mk1".into()});
+    commands.queue(RocketBuildCommand{ rocket, part_id: "engine_mk1".into()});
 }
 
 // ── Animation ─────────────────────────────────────────────────────────────────────
 #[derive(Component)]
 pub struct AnimationIndices {
-    first: usize,
-    last: usize,
+    pub first: usize,
+    pub last: usize,
 }
 
 #[derive(Component, Deref, DerefMut)]
-pub struct AnimationTimer(Timer);
+pub struct AnimationTimer(pub Timer);
 
 pub fn animate_sprite(
     time: Res<Time>,
@@ -239,53 +209,9 @@ pub fn animate_sprite(
 
 pub fn rocket_init(
     mut commands: Commands,
-    asset_server: Res<AssetServer>,
-    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
     planet_entity: Res<PlanetEntity>,
 ) {
-    let texture = asset_server.load("space-io.png");
-    let layout = TextureAtlasLayout::from_grid(UVec2::splat(16), 16, 16, None, None);
-    let texture_atlas_layout = texture_atlas_layouts.add(layout);
-
-    let rocket_assets = RocketAssets {
-        command_pod_sprite: Sprite::from_atlas_image(
-            texture.clone(),
-            TextureAtlas {
-                layout: texture_atlas_layout.clone(),
-                index: SPRITE_POD,
-            },
-        ),
-        tank_sprite: Sprite {
-            image: texture.clone(),
-            texture_atlas: Some(TextureAtlas {
-                layout: texture_atlas_layout.clone(),
-                index: SPRITE_FUEL,
-            }),
-            ..Default::default()
-        },
-        engine_sprite: Sprite {
-            image: texture.clone(),
-            texture_atlas: Some(TextureAtlas {
-                layout: texture_atlas_layout.clone(),
-                index: SPRITE_ENGINE,
-            }),
-            rect: Some(Rect::new(0.0, 0.0, 16.0, 6.0)),
-            ..Default::default()
-        },
-        exhaust: Sprite {
-            image: texture.clone(),
-            texture_atlas: Some(TextureAtlas {
-                layout: texture_atlas_layout.clone(),
-                index: SPRITE_EXHAUST_START,
-            }),
-            color: Color::NONE,
-            ..Default::default()
-        },
-    };
-
-    spawn_default_rocket(&mut commands, &rocket_assets, &planet_entity.0);
-
-    commands.insert_resource(rocket_assets);
+    spawn_default_rocket(&mut commands, &planet_entity.0);
 }
 
 pub fn physics_step(
@@ -364,10 +290,12 @@ pub fn physics_step(
             let mut new_stage_fuel = 0.0;
             let mut new_stage_thrust = 0.0;
             let mut new_stage_capacity = 0.0;
+            let mut new_stage_fuel_rate = 0.0;
             while let Ok((mut part, parent)) = part_parent_q.get_mut(child) {
                 match part.as_mut() {
                     RocketPart::Engine(engine) => {
                         new_stage_thrust += engine.thrust;
+                        new_stage_fuel_rate += engine.fuel_rate;
                         engine.active = rocket.stage_active;
                     }
                     RocketPart::FuelTank(tank) => {
@@ -375,9 +303,14 @@ pub fn physics_step(
                         new_stage_capacity += tank.capacity;
                         if rocket.stage_active {
                             tank.fuel -=
-                                (FUEL_RATE * (tank.fuel / rocket.stage_fuel) * dt).max(0.0);
+                                (rocket.stage_fuel_rate * (tank.fuel / rocket.stage_fuel) * dt).max(0.0);
                         }
                     }
+                    RocketPart::Decoupler => {
+                        // This is the end of the stage!
+                        break;
+                    }
+                    _ => {}
                 }
                 child = parent.get();
             }
@@ -387,12 +320,15 @@ pub fn physics_step(
                 force += nose * rocket.stage_thrust;
             }
 
+
             // update for next frame
             rocket.stage_fuel = new_stage_fuel;
             rocket.stage_capacity = new_stage_capacity;
             rocket.stage_thrust = new_stage_thrust;
+            rocket.stage_fuel_rate = new_stage_fuel_rate;
             rocket.stage_active =
                 rocket.throttle > 0.0 && rocket.stage_fuel > 0.0 && rocket.stage_thrust > 0.0;
+            // println!("Rocket stuff: {} {} {}", new_stage_fuel, new_stage_thrust, rocket.stage_active);
             // }
         }
 

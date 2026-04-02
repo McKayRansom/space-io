@@ -4,7 +4,10 @@ use bevy::{
 };
 use serde::Deserialize;
 
-use crate::AppState;
+use crate::{
+    rocket::{AnimationIndices, AnimationTimer},
+    AppState,
+};
 
 // ── Part data definitions (loaded from assets/parts.ron) ──────────────────────
 
@@ -16,11 +19,55 @@ pub struct PartDef {
     pub sprite_index: usize,
     pub size: (f32, f32),
     pub kind: PartKind,
+    pub sprite_rect: Option<(f32, f32, f32, f32)>,
+    pub anim: Option<(usize, usize)>,
+}
+
+#[derive(Resource)]
+pub struct SpritesheetInfo {
+    image: Handle<Image>,
+    layout: Handle<TextureAtlasLayout>,
+}
+
+impl PartDef {
+    pub fn sprite(&self, world: &mut World) -> Sprite {
+        let spritesheet = world.get_resource::<SpritesheetInfo>().unwrap();
+        Sprite {
+            image: spritesheet.image.clone(),
+            texture_atlas: Some(TextureAtlas {
+                layout: spritesheet.layout.clone(),
+                index: self.sprite_index,
+            }),
+            rect: self
+                .sprite_rect
+                .map(|(x0, y0, x1, y1)| Rect::new(x0, y0, x1, y1)),
+            ..Default::default()
+        }
+    }
+    pub fn build_anim(&self, world: &mut World) -> (Sprite, AnimationIndices, AnimationTimer) {
+        let spritesheet = world.get_resource::<SpritesheetInfo>().unwrap();
+        (
+            Sprite {
+                image: spritesheet.image.clone(),
+                texture_atlas: Some(TextureAtlas {
+                    layout: spritesheet.layout.clone(),
+                    index: self.anim.unwrap().0,
+                }),
+                ..Default::default()
+            },
+            AnimationIndices {
+                first: self.anim.unwrap().0,
+                last: self.anim.unwrap().1,
+            },
+            AnimationTimer(Timer::from_seconds(0.1, TimerMode::Repeating)),
+        )
+    }
 }
 
 #[derive(Deserialize, Clone, Debug)]
 pub enum PartKind {
     CommandPod,
+    Decoupler,
     FuelTank { capacity: f32 },
     Engine { thrust: f32, fuel_rate: f32 },
 }
@@ -77,9 +124,26 @@ impl PartsCatalog {
 
 // ── Systems ───────────────────────────────────────────────────────────────────
 
-pub fn load_parts_config(mut commands: Commands, asset_server: Res<AssetServer>) {
+pub fn load_parts_config(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    mut texture_atlas_layouts: ResMut<Assets<TextureAtlasLayout>>,
+) {
     let handle = asset_server.load("parts.ron");
     commands.insert_resource(PartsConfigHandle(handle));
+
+    let spritesheet_info = SpritesheetInfo {
+        image: asset_server.load("space-io.png"),
+        layout: texture_atlas_layouts.add(TextureAtlasLayout::from_grid(
+            UVec2::splat(16),
+            16,
+            16,
+            None,
+            None,
+        )),
+    };
+
+    commands.insert_resource(spritesheet_info);
 }
 
 /// Converts the loaded `PartsConfig` asset into a `PartsCatalog` resource.
