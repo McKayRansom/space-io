@@ -17,6 +17,8 @@ mod rocket;
 use rocket::*;
 mod shaders;
 use shaders::*;
+mod terrain;
+use terrain::*;
 mod hud;
 use hud::*;
 mod player;
@@ -43,7 +45,7 @@ const LANDING_MAX_SPEED: f32 = 200.0; // max speed (or relative speed) for a saf
 const STAGE_SEP_VEL: f32 = 10.0;
 
 // ── Game constants ────────────────────────────────────────────────────────────────
-const DEFAULT_SCALE: f32 = 0.5;
+const DEFAULT_SCALE: f32 = 1.5;
 const MAP_VIEW_SCALE: f32 = 25.0;
 
 // ── State ──────────────────────────────────────────────────────────────────────
@@ -66,7 +68,7 @@ fn main() {
     App::new()
         .add_plugins(FrameTimeDiagnosticsPlugin)
         .add_plugins(PhysicsPlugins::default())
-        // .add_plugins(PhysicsDebugPlugin::default()) // Enables debug rendering
+        .add_plugins(PhysicsDebugPlugin::default()) // Enables debug rendering
         .insert_resource(Gravity(Vec2::ZERO)) // we apply custom N-body gravity manually
         .add_plugins(
             DefaultPlugins
@@ -83,6 +85,7 @@ fn main() {
         .init_state::<AppState>()
         .add_plugins((
             ShaderPlugin,
+            TerrainPlugin,
             PartsPlugin,
             RocketPlugin,
             PlayerPlugin,
