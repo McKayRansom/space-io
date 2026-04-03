@@ -241,7 +241,7 @@ pub fn rocket_init(mut commands: Commands, planet_entity: Res<PlanetEntity>) {
 }
 
 pub fn physics_step(
-    time: Res<Time>,
+    time: Res<Time<Physics>>,
     bodies: Query<(Entity, &Transform, &CelestialBody)>,
     mut rocket_q: Query<
         (

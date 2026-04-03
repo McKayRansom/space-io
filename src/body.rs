@@ -202,7 +202,7 @@ fn setup_bodies(
 }
 
 pub fn update_bodies(
-    time: Res<Time>,
+    time: Res<Time<Physics>>,
     mut bodies: Query<(Entity, &Transform, &mut LinearVelocity, &CelestialBody)>,
     body_pos: Query<&Transform>,
 ) {
