@@ -20,7 +20,7 @@ pub fn handle_input(
         (&RocketPart, &GlobalTransform, &mut Transform, &Parent),
         (Without<Rocket>, Without<CelestialBody>),
     >,
-    bodies: Query<(Entity, &Transform, &CelestialBody), Without<Rocket>>,
+    bodies: Query<(Entity, &Transform, &LinearVelocity, &CelestialBody), Without<Rocket>>,
     planet: Res<PlanetEntity>,
     moon: Res<MoonEntity>,
 ) {
@@ -128,13 +128,12 @@ pub fn handle_input(
     }
     if keys.just_pressed(KeyCode::Digit3) {
         // go to moon orbit
-        let (_entity, moon_tf, moon) = bodies.get(moon.0).unwrap();
+        let (_entity, moon_tf, moon_vel, _moon) = bodies.get(moon.0).unwrap();
         let r0 = MOON_RADIUS * 1.1;
         let orbital_v = (G * MOON_MASS / r0).sqrt();
         let new_pos = Vec2::new(moon_tf.translation.x, moon_tf.translation.y + r0);
         tf.translation = Vec3::new(new_pos.x, new_pos.y, 1.0);
-        // avian_pos.0 = new_pos;
-        lin_vel.0 = moon.velocity + Vec2::new(orbital_v, 0.0);
+        lin_vel.0 = moon_vel.0 + Vec2::new(orbital_v, 0.0);
         rocket.landed = false;
         rocket.crashed = false;
     }

@@ -208,42 +208,42 @@ pub fn draw_orbit(gizmos: &mut Gizmos, focus: Vec2, orbit: OrbitalParameters) {
 
 pub fn update_trajectory(
     rocket_q: Query<(&Transform, &LinearVelocity, &Rocket, &ComputedCenterOfMass), With<PlayerRocket>>,
-    bodies: Query<(&Transform, &CelestialBody)>,
+    bodies: Query<(&Transform, &LinearVelocity, &CelestialBody)>,
     mut gizmos: Gizmos,
 ) {
     // draw moon trajectory
-    for (bt, body) in bodies.iter() {
+    for (bt, vel, body) in bodies.iter() {
         if body.parent.is_none() {
             continue;
         }
-        let (bt2, body2) = bodies.get(body.parent.unwrap()).unwrap();
+        let (bt2, _vel2, body2) = bodies.get(body.parent.unwrap()).unwrap();
         // if !body2.fixed {
         //     continue;
         // }
 
         let pos = bt.translation.truncate() - bt2.translation.truncate(); // position relative to orbital focus
-        let vel = body.velocity;
+        // let vel = body.velocity;
 
-        if let Some(orbit) = OrbitalParameters::calc(body2.mass, pos, vel) {
+        if let Some(orbit) = OrbitalParameters::calc(body2.mass, pos, vel.0) {
             draw_orbit(&mut gizmos, bt2.translation.truncate(), orbit);
         }
     }
 
-    let Ok((rtf, velocity, rocket, com)) = rocket_q.get_single() else {
+    let Ok((rtf, rocket_vel, rocket, com)) = rocket_q.get_single() else {
         return;
     };
     if rocket.crashed || rocket.landed || rocket.soi_body.is_none() {
         return;
     }
 
-    let (tf, body) = bodies.get(rocket.soi_body.unwrap()).unwrap();
-    let focus = tf.translation.truncate();
+    let (body_tf, body_vel, body) = bodies.get(rocket.soi_body.unwrap()).unwrap();
+    let focus = body_tf.translation.truncate();
 
     // position relative to orbital focus
     let pos = rtf.translation.truncate() - focus + (rtf.rotation * Vec3::new(com.x, com.y, 0.0)).truncate();
-    let vel = **velocity - body.velocity;
+    let relative_vel = **rocket_vel - body_vel.0;
 
-    if let Some(orbit) = OrbitalParameters::calc(body.mass, pos, vel) {
+    if let Some(orbit) = OrbitalParameters::calc(body.mass, pos, relative_vel) {
         draw_orbit(&mut gizmos, focus, orbit);
     }
 }
