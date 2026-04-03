@@ -23,6 +23,7 @@ pub fn handle_input(
     bodies: Query<(Entity, &Transform, &LinearVelocity, &CelestialBody), Without<Rocket>>,
     planet: Res<PlanetEntity>,
     moon: Res<MoonEntity>,
+    mut time: ResMut<Time<Physics>>,
 ) {
     let Ok((rocket_entity, mut tf, mut rocket, mut lin_vel)) = q.get_single_mut() else {
         return;
@@ -105,7 +106,7 @@ pub fn handle_input(
         rocket.throttle = if thrusting { 1.0 } else { 0.0 };
     }
 
-    // debugging tools
+    // debugging tools NOTE: Could be moved to commands
     if keys.just_pressed(KeyCode::Digit1) {
         // go back to planet
         let new_pos = Vec2::new(0., PLANET_RADIUS);
@@ -136,6 +137,20 @@ pub fn handle_input(
         lin_vel.0 = moon_vel.0 + Vec2::new(orbital_v, 0.0);
         rocket.landed = false;
         rocket.crashed = false;
+    }
+    if keys.just_pressed(KeyCode::Comma) {
+        // slow down time
+        let speed = time.relative_speed();
+        if speed > 1.0 {
+            time.set_relative_speed(speed * 0.5);
+        }
+    }
+    if keys.just_pressed(KeyCode::Period) {
+        // speed up time
+        let speed = time.relative_speed();
+        if speed < 8.0 {
+            time.set_relative_speed(speed * 2.0);
+        }
     }
 }
 

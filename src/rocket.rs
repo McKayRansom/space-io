@@ -482,12 +482,13 @@ impl Plugin for RocketPlugin {
     fn build(&self, app: &mut App) {
         app.add_systems(OnEnter(AppState::Playing), rocket_init)
             .add_systems(
+                // TODO: Do these need to be moved to a physics schedule?
                 FixedUpdate,
-                physics_step.run_if(in_state(AppState::Playing)),
+                (physics_step, collision_handler).run_if(in_state(AppState::Playing)),
             )
             .add_systems(
                 Update,
-                (collision_handler, update_exhaust, animate_sprite)
+                (update_exhaust, animate_sprite)
                     .run_if(in_state(AppState::Playing)),
             );
     }
