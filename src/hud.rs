@@ -217,12 +217,8 @@ pub fn update_trajectory(
             continue;
         }
         let (bt2, _vel2, body2) = bodies.get(body.parent.unwrap()).unwrap();
-        // if !body2.fixed {
-        //     continue;
-        // }
 
         let pos = bt.translation.truncate() - bt2.translation.truncate(); // position relative to orbital focus
-        // let vel = body.velocity;
 
         if let Some(orbit) = OrbitalParameters::calc(body2.mass, pos, vel.0) {
             draw_orbit(&mut gizmos, bt2.translation.truncate(), orbit);

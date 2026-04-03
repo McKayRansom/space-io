@@ -51,6 +51,7 @@ cargo run
 - [ ] Re-entry: Atmospheric drag/maybe parachute or something to land?
 - [ ] Quicksave/reaload would be nice
 - [ ] HUD of some kind
+  - [ ] ASCII horizontal Navball???
 
 ### Game
 - [ ] Main menu, saves, settings
