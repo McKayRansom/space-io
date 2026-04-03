@@ -150,7 +150,7 @@ impl Command for RocketBuildCommand {
 pub fn spawn_default_rocket(commands: &mut Commands, planet: &Entity) {
     let rocket = commands
         .spawn((
-            Transform::from_xyz(0., PLANET_RADIUS * 1.05, 1.0),
+            Transform::from_xyz(0., PLANET_RADIUS * 1.10, 1.0),
             Visibility::default(),
             Rocket {
                 // active_stage: Some(stage1),
@@ -247,6 +247,7 @@ pub fn physics_step(
         (
             &Transform,
             &ComputedMass,
+            &ComputedCenterOfMass,
             &mut Rocket,
             &mut ExternalForce,
             &mut ExternalTorque,
@@ -256,7 +257,7 @@ pub fn physics_step(
     mut part_parent_q: Query<(&mut RocketPart, &Parent)>,
     // mut part_q: Query<&mut RocketPart>,
 ) {
-    for (tf, mass, mut rocket, mut ext_force, mut ext_torque) in rocket_q.iter_mut() {
+    for (tf, mass, com, mut rocket, mut ext_force, mut ext_torque) in rocket_q.iter_mut() {
         if rocket.crashed {
             continue;
         }
@@ -273,41 +274,37 @@ pub fn physics_step(
         // }
 
         let dt = time.delta_secs();
-        let pos = tf.translation.truncate();
+        let pos =
+            tf.translation.truncate() + (tf.rotation * Vec3::new(com.x, com.y, 0.0)).truncate();
 
         let mut force: Vec2 = Vec2::ZERO;
+        let mut lowest_mass: f32 = f32::MAX;
+        // let mut soi
 
-        // find body with the lowest mass that we are in the SOI of
-        let (soi_body, body_tf, body) = bodies
-            .iter()
-            .min_by(|(_e1, t1, b1), (_e2, t2, b2)| {
-                let d1 = (t1.translation.truncate() - pos).length();
-                let m1 = if d1 < b1.soi.unwrap_or(f32::MAX) {
-                    b1.mass
-                } else {
-                    // not in SOI
-                    f32::MAX
-                };
-                let d2 = (t2.translation.truncate() - pos).length();
-                let m2 = if d2 < b2.soi.unwrap_or(f32::MAX) {
-                    b2.mass
-                } else {
-                    // not in SOI
-                    f32::MAX
-                };
-                m1.partial_cmp(&m2).unwrap()
-            })
-            .unwrap();
-        rocket.soi_body = Some(soi_body);
+        for (entity, body_tf, body) in bodies.iter() {
 
-        // Gravity from parent celestial body
-        let to_body = body_tf.translation.truncate() - pos;
-        let dist_sq = to_body.length_squared();
-        if dist_sq < 1.0 {
-            continue;
+            // Gravity from parent celestial body
+            let to_body = body_tf.translation.truncate() - pos;
+
+            let dist_sq = to_body.length_squared();
+            if dist_sq < 1.0 {
+                continue;
+            }
+            let dist = dist_sq.sqrt();
+
+            if dist > body.soi.unwrap_or(f32::MAX) {
+                continue;
+            }
+
+            if body.mass < lowest_mass {
+            
+                // println!("SOI BODY: {} mass: {}" , soi_body, body.mass);
+                lowest_mass = body.mass;
+                rocket.soi_body = Some(entity);
+            }
+
+            force += mass.value() * (to_body / dist) * (G * body.mass / dist_sq);
         }
-        let dist = dist_sq.sqrt();
-        force += mass.value() * (to_body / dist) * (G * body.mass / dist_sq);
 
         // Thrust — read engine thrust and consume fuel from the active stage's children
         // if rocket.throttle > 0.0 || rocket.stage_active {
@@ -375,7 +372,6 @@ pub fn collision_handler(
     mut commands: Commands,
     mut collision_events: EventReader<Collision>,
     part_q: Query<&Parent, (With<RocketPart>, Without<Rocket>)>,
-    planet_q: Query<(Entity, &CelestialBody), With<RigidBody>>,
 ) {
     for Collision(contacts) in collision_events.read() {
         // TODO: If normal_impusle and tangent_impulse are less than something, switch to landed
@@ -387,34 +383,21 @@ pub fn collision_handler(
             continue;
         }
 
-        if let Ok(mut rocket) = rocket_q
-            .get_mut(contacts.body_entity1.unwrap())
-        {
+        if let Ok(mut rocket) = rocket_q.get_mut(contacts.body_entity1.unwrap()) {
             if rocket.tail.is_some_and(|tail| tail == contacts.entity1) {
                 // we gotta move it
                 println!("YAY1");
                 rocket.tail = Some(part_q.get(contacts.entity1).unwrap().get());
             }
+            commands.entity(contacts.entity1).despawn_recursive();
         }
 
-
-        if let Ok(mut rocket) = rocket_q
-            .get_mut(contacts.body_entity2.unwrap())
-        {
+        if let Ok(mut rocket) = rocket_q.get_mut(contacts.body_entity2.unwrap()) {
             if rocket.tail.is_some_and(|tail| tail == contacts.entity2) {
                 // we gotta move it
                 println!("YAY2");
                 rocket.tail = Some(part_q.get(contacts.entity2).unwrap().get());
             }
-        }
-
-        // TODO: if this is a command pod, that's game over
-        // only if not planet
-        if planet_q.get(contacts.entity1).is_err() {
-            commands.entity(contacts.entity1).despawn_recursive();
-        }
-        // only if not planet
-        if planet_q.get(contacts.entity2).is_err() {
             commands.entity(contacts.entity2).despawn_recursive();
         }
     }

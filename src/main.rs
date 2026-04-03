@@ -36,7 +36,8 @@ const PLANET_SURFACE_GRAVITY: f32 = 10.0;
 const PLANET_MASS: f32 = PLANET_SURFACE_GRAVITY * (PLANET_RADIUS * PLANET_RADIUS) / G;
 const ROT_FORCE: f32 = 3000.0; // no idea on the units on this
 
-const MOON_SURFACE_GRAVITY: f32 = PLANET_SURFACE_GRAVITY / 6.0;
+// const MOON_SURFACE_GRAVITY: f32 = PLANET_SURFACE_GRAVITY / 6.0;
+const MOON_SURFACE_GRAVITY: f32 = PLANET_SURFACE_GRAVITY * 2.0;
 const MOON_MASS: f32 = MOON_SURFACE_GRAVITY * (MOON_RADIUS * MOON_RADIUS) / G; // G·M_moon = 1·10⁶
 const MOON_RADIUS: f32 = 200.0;
 const MOON_ORBIT: f32 = 10000.0; // distance from planet center
@@ -45,7 +46,7 @@ const LANDING_MAX_SPEED: f32 = 200.0; // max speed (or relative speed) for a saf
 const STAGE_SEP_VEL: f32 = 10.0;
 
 // ── Game constants ────────────────────────────────────────────────────────────────
-const DEFAULT_SCALE: f32 = 1.5;
+const DEFAULT_SCALE: f32 = 0.5;
 const MAP_VIEW_SCALE: f32 = 25.0;
 
 // ── State ──────────────────────────────────────────────────────────────────────

@@ -32,6 +32,7 @@ impl CelestialBody {
             // assume starting at +x for now
             velocity: if let Some(parent_mass) = parent_mass {
                 Vec2::new(0., (G * parent_mass / orbital_radius).sqrt())
+                // Vec2::ZERO
             } else {
                 Vec2::ZERO
             },
@@ -100,6 +101,7 @@ pub fn spawn_body(
         body,
         // avian2d: circle collider stays as backstop; terrain polyline is primary
         RigidBody::Static,
+        Restitution::new(0.0),
     ));
 
     cmds.add_children(&[planet_terrain, planet_map_view]);

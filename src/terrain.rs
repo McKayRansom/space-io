@@ -208,7 +208,7 @@ fn build_terrain_polyline(
 /// to a celestial body's surface.
 pub fn update_terrain_colliders(
     map_view: Res<MapView>,
-    rocket_q: Query<&Transform, With<Rocket>>,
+    rocket_q: Query<&Transform, With<PlayerRocket>>,
     body_q: Query<(Entity, &Transform, &BodyTerrainParams)>,
     collider_q: Query<(Entity, &TerrainColliderMarker)>,
     config: Res<TerrainColliderConfig>,

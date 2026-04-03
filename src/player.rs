@@ -1,3 +1,5 @@
+use avian2d::prelude::mass_properties::components::RecomputeMassProperties;
+
 use super::*;
 
 pub fn handle_input(
@@ -66,22 +68,14 @@ pub fn handle_input(
                         // give the separated stage its own physics body
                         RigidBody::Dynamic,
                         LinearVelocity(sep_vel),
-                        // ExternalForce is added automatically!
-                        // ExternalForce::new(Vec2::ZERO).with_persistence(false),
-                        // Avian's update_collider_parents only processes entities that have
-                        // both RigidBody and AncestorMarker<ColliderMarker>. When we reparent
-                        // the stage subtree here, the OnAdd<ColliderMarker> observer that
-                        // normally adds this marker walks UP the chain but stops at the stage
-                        // entity (which already has the marker), so it never reaches this new
-                        // root. We insert it manually so the next FixedPostUpdate correctly
-                        // re-registers all descendant colliders to this rigid body.
-                        // AncestorMarker::<ColliderMarker>::default(),
                     ))
                     // this will remove it from the old rocket automatically, which is nice
                     .add_child(tail);
 
                 rocket.tail = Some(parent.get());
-                // don't keep going! That would be bad
+                // parent.get().re
+                commands.entity(rocket_entity).insert(RecomputeMassProperties);
+                
                 return;
             }
 
