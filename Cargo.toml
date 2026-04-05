@@ -4,7 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-bevy = "0.15"
+bevy = "0.18"
 rand = "0.8"
 
 # Faster iteration builds: optimize deps, but keep game code debuggable
