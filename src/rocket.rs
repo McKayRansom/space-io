@@ -162,8 +162,6 @@ pub fn spawn_default_rocket(commands: &mut Commands, planet: &Entity) {
             PlayerRocket,
             // avian2d physics
             RigidBody::Dynamic,
-            ExternalForce::new(Vec2::ZERO).with_persistence(false),
-            ExternalTorque::new(0.0).with_persistence(false),
             Restitution::new(0.4),
             Friction::new(0.9),
         ))
@@ -246,18 +244,16 @@ pub fn physics_step(
     mut rocket_q: Query<
         (
             &Transform,
-            &ComputedMass,
             &ComputedCenterOfMass,
             &mut Rocket,
-            &mut ExternalForce,
-            &mut ExternalTorque,
+            Forces,
         ),
         Without<CelestialBody>,
     >,
-    mut part_parent_q: Query<(&mut RocketPart, &Parent)>,
+    mut part_parent_q: Query<(&mut RocketPart, &ChildOf)>,
     // mut part_q: Query<&mut RocketPart>,
 ) {
-    for (tf, mass, com, mut rocket, mut ext_force, mut ext_torque) in rocket_q.iter_mut() {
+    for (tf, com, mut rocket, mut forces) in rocket_q.iter_mut() {
         if rocket.crashed {
             continue;
         }
@@ -277,12 +273,10 @@ pub fn physics_step(
         let pos =
             tf.translation.truncate() + (tf.rotation * Vec3::new(com.x, com.y, 0.0)).truncate();
 
-        let mut force: Vec2 = Vec2::ZERO;
         let mut lowest_mass: f32 = f32::MAX;
         // let mut soi
 
         for (entity, body_tf, body) in bodies.iter() {
-
             // Gravity from parent celestial body
             let to_body = body_tf.translation.truncate() - pos;
 
@@ -297,17 +291,18 @@ pub fn physics_step(
             }
 
             if body.mass < lowest_mass {
-            
                 // println!("SOI BODY: {} mass: {}" , soi_body, body.mass);
                 lowest_mass = body.mass;
                 rocket.soi_body = Some(entity);
             }
 
-            force += mass.value() * (to_body / dist) * (G * body.mass / dist_sq);
+            forces.apply_linear_acceleration((to_body / dist) * (G * body.mass / dist_sq));
         }
 
         // Thrust — read engine thrust and consume fuel from the active stage's children
         // if rocket.throttle > 0.0 || rocket.stage_active {
+        let mut force: Vec2 = Vec2::ZERO;
+
         if let Some(tail) = rocket.tail {
             let mut child = tail;
             let mut new_stage_fuel = 0.0;
@@ -336,7 +331,7 @@ pub fn physics_step(
                     }
                     _ => {}
                 }
-                child = parent.get();
+                child = parent.parent();
             }
 
             if rocket.stage_active {
@@ -355,11 +350,11 @@ pub fn physics_step(
             // }
         }
 
-        ext_force.set_force(force);
+        forces.apply_force(force);
 
         let torque: f32 = rocket.torque * ROT_FORCE;
 
-        ext_torque.set_torque(torque);
+        forces.apply_torque(torque);
         // log::dbg
     }
 }
@@ -368,38 +363,40 @@ pub fn physics_step(
 /// The planet has a Collider::circle so avian fires CollisionStarted events when
 /// a rocket's circle collider overlaps it. We decide land vs crash here.
 pub fn collision_handler(
-    mut rocket_q: Query<&mut Rocket, Without<CelestialBody>>,
+    mut rocket_q: Query<(Entity, &mut Rocket), Without<CelestialBody>>,
     mut commands: Commands,
-    mut collision_events: EventReader<Collision>,
-    part_q: Query<&Parent, (With<RocketPart>, Without<Rocket>)>,
+    collisions: Collisions,
+    part_q: Query<&ChildOf, (With<RocketPart>, Without<Rocket>)>,
 ) {
-    for Collision(contacts) in collision_events.read() {
+    for (rocket_entity, mut rocket) in &mut rocket_q {
+
+        let mut total_impulse = 0.0;
+        let mut contact_entity: Option<Entity> = None;
+
+        for contact_pair in collisions.collisions_with(rocket_entity) {
+            total_impulse += contact_pair.total_normal_impulse_magnitude();
+            println!("COLLISION tota: {}", total_impulse);
+            contact_entity = Some(if contact_pair.body1.unwrap() == rocket_entity {
+                contact_pair.collider1
+            } else {
+                contact_pair.collider2
+            });
+        }
+
         // TODO: If normal_impusle and tangent_impulse are less than something, switch to landed
+        // or maybe rapier's internal islanding could be querried to decide if it thinks we are landed
         // landed state: Should be marked not active to the physics system, but if an active ship gets close enough, will need to be re-activated
 
-        if contacts.total_normal_impulse < LANDING_MAX_SPEED
-            && contacts.total_tangent_impulse < LANDING_MAX_SPEED
+        if total_impulse < LANDING_MAX_SPEED
         {
             continue;
         }
 
-        if let Ok(mut rocket) = rocket_q.get_mut(contacts.body_entity1.unwrap()) {
-            if rocket.tail.is_some_and(|tail| tail == contacts.entity1) {
-                // we gotta move it
-                println!("YAY1");
-                rocket.tail = Some(part_q.get(contacts.entity1).unwrap().get());
-            }
-            commands.entity(contacts.entity1).despawn_recursive();
+        if rocket.tail.is_some_and(|tail| tail == contact_entity.unwrap()) {
+            // we gotta move it
+            rocket.tail = Some(part_q.get( contact_entity.unwrap()).unwrap().parent());
         }
-
-        if let Ok(mut rocket) = rocket_q.get_mut(contacts.body_entity2.unwrap()) {
-            if rocket.tail.is_some_and(|tail| tail == contacts.entity2) {
-                // we gotta move it
-                println!("YAY2");
-                rocket.tail = Some(part_q.get(contacts.entity2).unwrap().get());
-            }
-            commands.entity(contacts.entity2).despawn_recursive();
-        }
+        commands.entity( contact_entity.unwrap()).despawn();
     }
 }
 
@@ -457,11 +454,11 @@ pub fn collision_handler(
 // }
 
 pub fn update_exhaust(
-    mut exhaust_q: Query<(&Exhaust, &Parent, &mut Sprite)>,
+    mut exhaust_q: Query<(&Exhaust, &ChildOf, &mut Sprite)>,
     engine_q: Query<&RocketPart, Without<Exhaust>>,
 ) {
     for (_exhaust, parent, mut sprite) in exhaust_q.iter_mut() {
-        match engine_q.get(parent.get()).unwrap() {
+        match engine_q.get(parent.parent()).unwrap() {
             RocketPart::Engine(engine) => {
                 if engine.active {
                     sprite.color = Color::default();
@@ -488,8 +485,7 @@ impl Plugin for RocketPlugin {
             )
             .add_systems(
                 Update,
-                (update_exhaust, animate_sprite)
-                    .run_if(in_state(AppState::Playing)),
+                (update_exhaust, animate_sprite).run_if(in_state(AppState::Playing)),
             );
     }
 }

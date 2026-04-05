@@ -25,7 +25,7 @@ pub fn build_editor_ui(
     // mut prev_state: Local<Option<(bool, Vec<(Entity, usize)>)>>,
 ) {
     // let show_editor = rocket_q
-    //     .get_single()
+    //     .single()
     //     .ok()
     //     .map(|rocket| {
     //         rocket.landed
@@ -91,7 +91,7 @@ pub fn handle_editor_input(
     stage_buttons: Query<(&Interaction, &PartButton)>,
     mouse: Res<ButtonInput<MouseButton>>,
 ) {
-    let Ok((rocket_entity, mut rocket)) = rocket_q.get_single_mut() else {
+    let Ok((rocket_entity, mut rocket)) = rocket_q.single_mut() else {
         return;
     };
 

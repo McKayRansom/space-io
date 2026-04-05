@@ -5,7 +5,9 @@ use bevy::{
 };
 
 use crate::{
-    AppState, DEFAULT_SCALE, G, MAP_VIEW_SCALE, MapView, PLANET_RADIUS, body::CelestialBody, rocket::{PlayerRocket, Rocket}
+    body::CelestialBody,
+    rocket::{PlayerRocket, Rocket},
+    AppState, MapView, DEFAULT_SCALE, G, MAP_VIEW_SCALE, PLANET_RADIUS,
 };
 
 // HUD label — one enum covers all telemetry rows; add a variant to add a new row
@@ -20,7 +22,6 @@ pub enum HudLabel {
 pub struct HudFps;
 
 pub fn hud_init(mut commands: Commands) {
-
     // Camera – start centered on the rocket
     commands.spawn((Camera2d, Transform::from_xyz(0., PLANET_RADIUS, 0.)));
 
@@ -114,7 +115,7 @@ pub fn hud_init(mut commands: Commands) {
 }
 
 pub fn update_fps(diagnostics: Res<DiagnosticsStore>, mut q: Query<&mut Text, With<HudFps>>) {
-    let Ok(mut text) = q.get_single_mut() else {
+    let Ok(mut text) = q.single_mut() else {
         return;
     };
     if let Some(fps) = diagnostics
@@ -207,7 +208,10 @@ pub fn draw_orbit(gizmos: &mut Gizmos, focus: Vec2, orbit: OrbitalParameters) {
 }
 
 pub fn update_trajectory(
-    rocket_q: Query<(&Transform, &LinearVelocity, &Rocket, &ComputedCenterOfMass), With<PlayerRocket>>,
+    rocket_q: Query<
+        (&Transform, &LinearVelocity, &Rocket, &ComputedCenterOfMass),
+        With<PlayerRocket>,
+    >,
     bodies: Query<(&Transform, &LinearVelocity, &CelestialBody)>,
     mut gizmos: Gizmos,
 ) {
@@ -225,7 +229,7 @@ pub fn update_trajectory(
         }
     }
 
-    let Ok((rtf, rocket_vel, rocket, com)) = rocket_q.get_single() else {
+    let Ok((rtf, rocket_vel, rocket, com)) = rocket_q.single() else {
         return;
     };
     if rocket.crashed || rocket.landed || rocket.soi_body.is_none() {
@@ -236,7 +240,8 @@ pub fn update_trajectory(
     let focus = body_tf.translation.truncate();
 
     // position relative to orbital focus
-    let pos = rtf.translation.truncate() - focus + (rtf.rotation * Vec3::new(com.x, com.y, 0.0)).truncate();
+    let pos = rtf.translation.truncate() - focus
+        + (rtf.rotation * Vec3::new(com.x, com.y, 0.0)).truncate();
     let relative_vel = **rocket_vel - body_vel.0;
 
     if let Some(orbit) = OrbitalParameters::calc(body.mass, pos, relative_vel) {
@@ -247,23 +252,30 @@ pub fn update_trajectory(
 pub fn follow_camera(
     rocket_q: Query<(&Transform, &ComputedCenterOfMass), (With<Rocket>, With<PlayerRocket>)>,
     mut cam_q: Query<&mut Transform, (With<Camera2d>, Without<Rocket>)>,
-    mut proj_q: Query<&mut OrthographicProjection, With<Camera2d>>,
+    mut proj_q: Query<&mut Projection, With<Camera2d>>,
     map_view: Res<MapView>,
     time: Res<Time>,
 ) {
-    let Ok((rtf, com)) = rocket_q.get_single() else {
+    let Ok((rtf, com)) = rocket_q.single() else {
         return;
     };
-    let Ok(mut ctf) = cam_q.get_single_mut() else {
+    let Ok(mut ctf) = cam_q.single_mut() else {
         return;
     };
-    let Ok(mut proj) = proj_q.get_single_mut() else {
+    let Ok(mut projection) = proj_q.single_mut() else {
+        return;
+    };
+    let Projection::Orthographic(ref mut proj) = *projection else {
         return;
     };
 
     let dt = time.delta_secs();
     let rotated_com = rtf.rotation * Vec3::new(com.x, com.y, 0.0);
-    let target_pos = Vec3::new(rtf.translation.x + rotated_com.x, rtf.translation.y + rotated_com.y, ctf.translation.z);
+    let target_pos = Vec3::new(
+        rtf.translation.x + rotated_com.x,
+        rtf.translation.y + rotated_com.y,
+        ctf.translation.z,
+    );
     let target_scale = if map_view.0 {
         MAP_VIEW_SCALE
     } else {
@@ -278,7 +290,7 @@ pub fn update_hud(
     rocket_q: Query<(&Transform, &LinearVelocity, &Rocket), With<PlayerRocket>>,
     mut hud_q: Query<(&HudLabel, &mut Text)>,
 ) {
-    let Ok((tf, velocity, rocket)) = rocket_q.get_single() else {
+    let Ok((tf, velocity, rocket)) = rocket_q.single() else {
         return;
     };
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);

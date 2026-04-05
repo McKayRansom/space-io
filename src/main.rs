@@ -9,7 +9,7 @@
 
 use avian2d::prelude::*;
 use bevy::{diagnostic::FrameTimeDiagnosticsPlugin, prelude::*};
-use rand::Rng;
+// use rand::Rng;
 
 mod body;
 use body::*;
@@ -67,7 +67,7 @@ struct MapView(bool);
 
 fn main() {
     App::new()
-        .add_plugins(FrameTimeDiagnosticsPlugin)
+        .add_plugins(FrameTimeDiagnosticsPlugin::new(120))
         .add_plugins(PhysicsPlugins::default())
         .add_plugins(PhysicsDebugPlugin::default()) // Enables debug rendering
         .insert_resource(Gravity(Vec2::ZERO)) // we apply custom N-body gravity manually
@@ -76,7 +76,7 @@ fn main() {
                 .set(WindowPlugin {
                     primary_window: Some(Window {
                         title: "Space IO – 2D KSP Prototype".into(),
-                        resolution: (1280., 720.).into(),
+                        resolution: (1280, 720).into(),
                         ..default()
                     }),
                     ..default()

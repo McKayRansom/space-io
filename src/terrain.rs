@@ -1,10 +1,6 @@
 use avian2d::prelude::*;
 use bevy::{
-    prelude::*,
-    render::{
-        render_asset::RenderAssetUsages,
-        render_resource::{Extent3d, TextureDimension, TextureFormat},
-    },
+    asset::RenderAssetUsages, prelude::*, render::render_resource::{Extent3d, TextureDimension, TextureFormat}
 };
 
 use crate::*;
@@ -221,7 +217,7 @@ pub fn update_terrain_colliders(
         return;
     }
 
-    let Ok(rocket_tf) = rocket_q.get_single() else {
+    let Ok(rocket_tf) = rocket_q.single() else {
         return;
     };
     let rocket_pos = rocket_tf.translation.truncate();

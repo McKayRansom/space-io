@@ -2,9 +2,9 @@
 #![allow(unused)]
 
 use bevy::{
-    prelude::*,
-    render::render_resource::{AsBindGroup, ShaderRef, ShaderType},
-    sprite::{AlphaMode2d, Material2d, Material2dPlugin},
+    prelude::*, render::render_resource::{AsBindGroup, ShaderType}, shader::ShaderRef, sprite_render::{AlphaMode2d, Material2d, Material2dPlugin},
+    // render::render_resource::{AsBindGroup, ShaderRef, ShaderType},
+    // sprite::{AlphaMode2d, Material2d, Material2dPlugin},
 };
 use rand::Rng;
 
@@ -118,7 +118,7 @@ pub fn cloud_mat(materials: &mut Assets<CloudMaterial>) -> Handle<CloudMaterial>
             light_border_1: 0.52,
             light_border_2: 0.62,
             size: 7.315,
-            seed: rand::thread_rng().gen_range(1.0f32..10.0f32),
+            seed: rand::random_range(1.0f32..10.0f32),
             octaves: 2,
             time: 0.0,
             _pad0: 0,

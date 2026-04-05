@@ -79,7 +79,7 @@ pub struct PartsConfig {
 
 // ── Asset loader ──────────────────────────────────────────────────────────────
 
-#[derive(Default)]
+#[derive(Default, TypePath)]
 pub struct PartsConfigLoader;
 
 impl AssetLoader for PartsConfigLoader {

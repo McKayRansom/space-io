@@ -137,22 +137,22 @@ pub fn spawn_body(
 fn setup_bodies(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
-    mut materials: ResMut<Assets<ColorMaterial>>,
+    // materials: ResMut<Assets<ColorMaterial>>,
     shader_mats: Res<CelestialMaterials>,
 ) {
     // ── Stars ──────────────────────────────────────────────────────────────
-    let mut rng = rand::thread_rng();
-    for _ in 0..300 {
-        let x: f32 = rng.gen_range(-3000.0..3000.0);
-        let y: f32 = rng.gen_range(-3000.0..3000.0);
-        let r: f32 = rng.gen_range(0.5..2.0);
-        let b: f32 = rng.gen_range(0.5..1.0);
-        commands.spawn((
-            Mesh2d(meshes.add(Circle::new(r))),
-            MeshMaterial2d(materials.add(Color::srgba(b, b, b, 0.85))),
-            Transform::from_xyz(x, y, -1.0),
-        ));
-    }
+    // let mut rng = rand::rng();
+    // for _ in 0..300 {
+    //     let x: f32 = rng.gen_range(-3000.0..3000.0);
+    //     let y: f32 = rng.gen_range(-3000.0..3000.0);
+    //     let r: f32 = rng.gen_range(0.5..2.0);
+    //     let b: f32 = rng.gen_range(0.5..1.0);
+    //     commands.spawn((
+    //         Mesh2d(meshes.add(Circle::new(r))),
+    //         MeshMaterial2d(materials.add(Color::srgba(b, b, b, 0.85))),
+    //         Transform::from_xyz(x, y, -1.0),
+    //     ));
+    // }
 
     // ── Planet ─────────────────────────────────────────────────────────────────
     let heights = shader_mats.planet_heights.clone(); // TODO: Why is this here, can we generate this within below?

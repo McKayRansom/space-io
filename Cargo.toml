@@ -5,10 +5,10 @@ edition = "2021"
 
 [dependencies]
 bevy = "0.18"
-rand = "0.8"
-avian2d = "0.2"
+rand = "0.10.0"
+avian2d = "0.6.1"
 serde = { version = "1", features = ["derive"] }
-ron = "0.8"
+ron = "0.12.1"
 
 # Faster iteration builds: optimize deps, but keep game code debuggable
 [profile.dev]

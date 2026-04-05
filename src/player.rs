@@ -17,7 +17,7 @@ pub fn handle_input(
     >,
     mut map_view: ResMut<MapView>,
     mut part_q: Query<
-        (&RocketPart, &GlobalTransform, &mut Transform, &Parent),
+        (&RocketPart, &GlobalTransform, &mut Transform, &ChildOf),
         (Without<Rocket>, Without<CelestialBody>),
     >,
     bodies: Query<(Entity, &Transform, &LinearVelocity, &CelestialBody), Without<Rocket>>,
@@ -25,7 +25,7 @@ pub fn handle_input(
     moon: Res<MoonEntity>,
     mut time: ResMut<Time<Physics>>,
 ) {
-    let Ok((rocket_entity, mut tf, mut rocket, mut lin_vel)) = q.get_single_mut() else {
+    let Ok((rocket_entity, mut tf, mut rocket, mut lin_vel)) = q.single_mut() else {
         return;
     };
 
@@ -36,7 +36,7 @@ pub fn handle_input(
 
     // Reset — despawn current Rocket and spawn new one
     if keys.just_pressed(KeyCode::KeyR) {
-        commands.entity(rocket_entity).despawn_recursive();
+        commands.entity(rocket_entity).despawn();
 
         spawn_default_rocket(&mut commands, &planet.0);
         return;
@@ -73,14 +73,14 @@ pub fn handle_input(
                     // this will remove it from the old rocket automatically, which is nice
                     .add_child(tail);
 
-                rocket.tail = Some(parent.get());
+                rocket.tail = Some(parent.parent());
                 // parent.get().re
                 commands.entity(rocket_entity).insert(RecomputeMassProperties);
                 
                 return;
             }
 
-            tail = parent.get();
+            tail = parent.parent();
         }
 
         return;
