@@ -56,10 +56,11 @@ pub fn handle_input(
                 *tf = Transform::default();
                 let nose = tf.local_y().truncate();
                 let sep_vel = **lin_vel - STAGE_SEP_VEL * nose;
+                let tf = gt.compute_transform();
                 commands
                     .spawn((
                         Visibility::default(),
-                        gt.clone(),
+                        tf,
                         Rocket {
                             // active_stage: Some(current),
                             tail: rocket.tail,

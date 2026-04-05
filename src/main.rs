@@ -42,7 +42,7 @@ const MOON_MASS: f32 = MOON_SURFACE_GRAVITY * (MOON_RADIUS * MOON_RADIUS) / G; /
 const MOON_RADIUS: f32 = 200.0;
 const MOON_ORBIT: f32 = 10000.0; // distance from planet center
 
-const LANDING_MAX_SPEED: f32 = 200.0; // max speed (or relative speed) for a safe landing
+const LANDING_MAX_FORCE: f32 = 20000.0; // max force for a safe landing (can be moved to part eventually)
 const STAGE_SEP_VEL: f32 = 10.0;
 
 // ── Game constants ────────────────────────────────────────────────────────────────

@@ -4,7 +4,7 @@ use bevy::prelude::*;
 use crate::{
     body::{CelestialBody, PlanetEntity},
     parts::{PartKind, PartsCatalog, SpritesheetInfo},
-    AppState, G, LANDING_MAX_SPEED, PLANET_RADIUS, ROT_FORCE,
+    AppState, G, LANDING_MAX_FORCE, PLANET_RADIUS, ROT_FORCE,
 };
 
 // ── Components ────────────────────────────────────────────────────────────────
@@ -242,12 +242,7 @@ pub fn physics_step(
     time: Res<Time<Physics>>,
     bodies: Query<(Entity, &Transform, &CelestialBody)>,
     mut rocket_q: Query<
-        (
-            &Transform,
-            &ComputedCenterOfMass,
-            &mut Rocket,
-            Forces,
-        ),
+        (&Transform, &ComputedCenterOfMass, &mut Rocket, Forces),
         Without<CelestialBody>,
     >,
     mut part_parent_q: Query<(&mut RocketPart, &ChildOf)>,
@@ -363,40 +358,58 @@ pub fn physics_step(
 /// The planet has a Collider::circle so avian fires CollisionStarted events when
 /// a rocket's circle collider overlaps it. We decide land vs crash here.
 pub fn collision_handler(
-    mut rocket_q: Query<(Entity, &mut Rocket), Without<CelestialBody>>,
+    mut rocket_q: Query<&mut Rocket, Without<CelestialBody>>,
     mut commands: Commands,
     collisions: Collisions,
     part_q: Query<&ChildOf, (With<RocketPart>, Without<Rocket>)>,
+    time: Res<Time<Physics>>,
 ) {
-    for (rocket_entity, mut rocket) in &mut rocket_q {
+    for contact_pair in collisions.iter() {
+        let (mut rocket, rocket_entity, part_entity) = if let Ok(rocket) = rocket_q.get_mut(contact_pair.body1.unwrap()) {
+            (rocket, contact_pair.body1.unwrap(), contact_pair.collider1)
+        } else if let Ok(rocket) = rocket_q.get_mut(contact_pair.body2.unwrap()) {
+            (rocket, contact_pair.body2.unwrap(), contact_pair.collider2)
+        } else {
+            continue;
+        };
+        // for (rocket_entity, mut rocket) in &mut rocket_q {
+        // let mut total_impulse = 0.0;
+        // let mut contact_entity: Option<Entity> = None;
 
-        let mut total_impulse = 0.0;
-        let mut contact_entity: Option<Entity> = None;
+        // for contact_pair in collisions.collisions_with(rocket_entity) {
+        let total_impulse = contact_pair.total_normal_impulse_magnitude();
 
-        for contact_pair in collisions.collisions_with(rocket_entity) {
-            total_impulse += contact_pair.total_normal_impulse_magnitude();
-            println!("COLLISION tota: {}", total_impulse);
-            contact_entity = Some(if contact_pair.body1.unwrap() == rocket_entity {
-                contact_pair.collider1
-            } else {
-                contact_pair.collider2
-            });
+        println!("Impulse total: {}", total_impulse);
+        let force_total = total_impulse / time.delta_secs();
+        println!("Force total: {}", force_total);
+
+        if force_total < LANDING_MAX_FORCE {
+            continue;
         }
+
 
         // TODO: If normal_impusle and tangent_impulse are less than something, switch to landed
         // or maybe rapier's internal islanding could be querried to decide if it thinks we are landed
         // landed state: Should be marked not active to the physics system, but if an active ship gets close enough, will need to be re-activated
 
-        if total_impulse < LANDING_MAX_SPEED
-        {
+        let parent = part_q.get(part_entity).unwrap().parent();
+        if parent == rocket_entity {
+            // no other parents, despawn 
+            commands.entity(parent).despawn();
             continue;
         }
 
-        if rocket.tail.is_some_and(|tail| tail == contact_entity.unwrap()) {
+        if rocket
+            .tail
+            .is_some_and(|tail| tail == part_entity)
+        {
             // we gotta move it
-            rocket.tail = Some(part_q.get( contact_entity.unwrap()).unwrap().parent());
+            
+                rocket.tail = Some(parent);
         }
-        commands.entity( contact_entity.unwrap()).despawn();
+        // TODO: create new rocket with our children if needed
+        commands.entity(part_entity).despawn();
+        // }
     }
 }
 
