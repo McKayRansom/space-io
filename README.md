@@ -37,7 +37,7 @@ cargo run
 - That KSP Alpha experience: Design a rocket and pilot it to the moon!
 
 ### VAB
-- [ ] Build a rocket with fuel tanks, engines, decouplers (landing gear optional!)
+- [x] Build a rocket with fuel tanks, engines, decouplers (landing gear optional!)
 - [ ] Save and name rocket designs
 - [ ] GUI with parts list, save/load at min
 ### Flight
@@ -51,19 +51,27 @@ cargo run
 - [ ] Re-entry: Atmospheric drag/maybe parachute or something to land?
 - [ ] Quicksave/reaload would be nice
 - [ ] HUD of some kind
+  - [ ] ASCII horizontal Navball???
 
 ### Game
 - [ ] Main menu, saves, settings
 - [ ] Some kind of art for HUDs, GUIs
-- [ ] Sprites for spaceships
-- [ ] Particle effects for atmosphere, engines
-- [ ] Terrain for planets
+- [x] Sprites for spaceships
+- [x] Particle effects for atmosphere, engines
+- [x] Terrain for planets
+
+
+## IDEAS
+
+- Procedural parts: Lots of mods did this for KSP, and people were hoping this would be in KSP 2. Should actually make my life a lot easier if done correctly!
+- Pixel rockets: Have people draw their rockets (full customizable) and draw the layout of fuel tanks/etc...
 
 ## Possible TODO
 
 ### Gameplay
 - [ ] Throttle control (analog, not just 0/1)
 - [ ] Objective list in top right, briefing on load for now
+  - [ ] Objectives: Takeoff, reach orbit, reach munar orbit, land on moon, return from moon
 - [ ] More celestial bodies (second moon, asteroid belt)
 
 ### Physics
@@ -72,14 +80,14 @@ cargo run
 - [ ] Trajectory prediction that accounts for the moon's gravity
 
 ### Visuals & UI
-- [ ] Animated exhaust (flickering alpha or particle effect)
-- [ ] Surface terrain / elevation on the planet and moon
+- [x] Animated exhaust (flickering alpha or particle effect)
+- [x] Surface terrain / elevation on the planet and moon
 - [ ] Crash animation
 - [ ] Maneuver node planning on the map view
 - [ ] Prograde/retrograde/normal markers on the HUD
 - [ ] Navball or heading indicator
 
 ### Code / Architecture
-- [ ] Split `main.rs` into modules as the file grows
-- [ ] Configurable constants via a TOML file or in-game editor
+- [x] Split `main.rs` into modules as the file grows
+- [x] Configurable constants via a TOML file or in-game editor
 - [ ] Save/load state
