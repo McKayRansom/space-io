@@ -448,6 +448,7 @@ pub fn collision_handler(
     collisions: Collisions,
     part_q: Query<&ChildOf, (With<RocketPart>, Without<Rocket>)>,
     collider_of_q: Query<&ColliderOf>,
+    vel_q: Query<&LinearVelocity>,
     time: Res<Time<Physics>>,
 ) {
     for contact_pair in collisions.iter() {
@@ -474,25 +475,32 @@ pub fn collision_handler(
         let force_total = total_impulse / time.delta_secs();
         // println!("Force total: {}", force_total);
 
-
         if rocket.landed {
             continue;
         }
 
-        if force_total < LANDING_FORCE {
+        // Sanity check: If relative velocity is < 5, do nothing, if it's greater than 10, always break
+        let rocket_vel = vel_q.get(rocket_entity).unwrap();
+        let other_vel = vel_q.get(other_entity).unwrap();
+        let rel_vel = (other_vel.0 - rocket_vel.0).length();
+
+        if force_total < LANDING_FORCE && rel_vel < 1.0 {
             // land rocket...
             if body_q.contains(other_entity) {
-                log::info!("Landing Rocket force is only {}", force_total);
+                log::info!("Landing Rocket force is only {} rel vel {}", force_total, rel_vel);
+                // mark as landed now so other collisions don't screw things up before the Land command goes through
+                rocket.landed = true;
                 commands.queue(Land{rocket_entity, body: other_entity, part_entity});
             }
-        }
-
-
-        if force_total < BREAK_FORCE {
             continue;
         }
 
-        log::info!("Part {} breaking on contact with {}", part_entity, other_entity);
+
+        if force_total < BREAK_FORCE || rel_vel < 10.0 {
+            continue;
+        }
+
+        log::info!("Part {} breaking on contact with {} rel_vel {}", part_entity, other_entity, rel_vel);
 
         // TODO: If normal_impusle and tangent_impulse are less than something, switch to landed
         // or maybe rapier's internal islanding could be querried to decide if it thinks we are landed

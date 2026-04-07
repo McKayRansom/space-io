@@ -354,8 +354,8 @@ fn terrain_moon_mat(
     assets.add(TerrainMaterial {
         params: TerrainMaterialUniform {
             colors: [lit, lit, mid, mid, dark, dark],
-            base_radius_frac: 1.0,
-            height_scale_frac: 0.05,
+            base_radius_frac: 0.8,
+            height_scale_frac: 0.2,
             _pad0: 0,
             _pad1: 0,
         },

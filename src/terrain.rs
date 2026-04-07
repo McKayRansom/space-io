@@ -206,28 +206,21 @@ fn build_terrain_polyline(
 /// Generates (or updates) a terrain polyline collider near the rocket when close
 /// to a celestial body's surface.
 pub fn update_terrain_colliders(
-    map_view: Res<MapView>,
     rocket_q: Query<&Transform, With<PlayerRocket>>,
-    body_q: Query<(Entity, &Transform, &BodyTerrainParams)>,
+    body_q: Query<(Entity, &GlobalTransform, &BodyTerrainParams)>,
     collider_q: Query<(Entity, &TerrainColliderMarker)>,
     config: Res<TerrainColliderConfig>,
     mut commands: Commands,
 ) {
-    // TODO: I don't think this is what we want...
-    if map_view.0 {
-        for (e, _) in collider_q.iter() {
-            commands.entity(e).despawn();
-        }
-        return;
-    }
 
     let Ok(rocket_tf) = rocket_q.single() else {
         return;
     };
     let rocket_pos = rocket_tf.translation.truncate();
 
+    // body_q is technically iterating the shader mesh for the terrain, so we need the global transform
     for (body_entity, body_tf, terrain) in body_q.iter() {
-        let body_pos = body_tf.translation.truncate();
+        let body_pos = body_tf.translation().truncate();
         let to_rocket = rocket_pos - body_pos;
         let dist = to_rocket.length();
         let threshold = terrain.base_radius * config.proximity_threshold_factor;

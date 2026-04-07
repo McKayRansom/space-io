@@ -242,6 +242,7 @@ impl Plugin for CelestialBodyPlugin {
         app.add_systems(
             FixedUpdate,
             (update_bodies,).run_if(in_state(AppState::Playing)),
+
         );
     }
 }
