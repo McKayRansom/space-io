@@ -66,7 +66,10 @@ cargo run
 - Procedural parts: Lots of mods did this for KSP, and people were hoping this would be in KSP 2. Should actually make my life a lot easier if done correctly!
 - Pixel rockets: Have people draw their rockets (full customizable) and draw the layout of fuel tanks/etc...
 
-## Possible TODO
+## TODO
+- [ ] Refactor parts heirarchy - Needs real stage queue again probably...
+- [ ] Non-physics warp
+- [ ] Real landing
 
 ### Gameplay
 - [ ] Throttle control (analog, not just 0/1)

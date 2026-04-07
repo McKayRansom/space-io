@@ -102,7 +102,7 @@ pub fn spawn_body(
         body,
         // avian2d: circle collider stays as backstop; terrain polyline is primary
         RigidBody::Kinematic,
-        Restitution::new(0.0),
+        // Restitution::new(0.0),
     ));
 
     cmds.add_children(&[planet_terrain, planet_map_view]);

@@ -1,6 +1,9 @@
 use avian2d::prelude::*;
 use bevy::{
-    asset::RenderAssetUsages, prelude::*, render::render_resource::{Extent3d, TextureDimension, TextureFormat}
+    asset::RenderAssetUsages,
+    log,
+    prelude::*,
+    render::render_resource::{Extent3d, TextureDimension, TextureFormat},
 };
 
 use crate::*;
@@ -152,7 +155,7 @@ pub struct TerrainColliderConfig {
 impl Default for TerrainColliderConfig {
     fn default() -> Self {
         Self {
-            proximity_threshold_factor: 1.3,
+            proximity_threshold_factor: 2.3,
             arc_half_radians: std::f32::consts::FRAC_PI_2 / 10.0,
             num_samples: 200,
             update_angle_threshold: 0.05,
@@ -210,6 +213,7 @@ pub fn update_terrain_colliders(
     config: Res<TerrainColliderConfig>,
     mut commands: Commands,
 ) {
+    // TODO: I don't think this is what we want...
     if map_view.0 {
         for (e, _) in collider_q.iter() {
             commands.entity(e).despawn();
@@ -234,6 +238,7 @@ pub fn update_terrain_colliders(
 
         if dist > threshold {
             if let Some((e, _)) = existing {
+                log::info!("Rocket moved too far, despawning existing terrain");
                 commands.entity(e).despawn();
             }
             continue;
@@ -252,21 +257,33 @@ pub fn update_terrain_colliders(
             continue;
         }
 
+        log::info!("Rebuilding terrain for planet: {}", body_entity);
+
         if let Some((e, _)) = existing {
             commands.entity(e).despawn();
         }
 
-        let points = build_terrain_polyline(terrain, rocket_angle, config.arc_half_radians, config.num_samples);
+        let points = build_terrain_polyline(
+            terrain,
+            rocket_angle,
+            config.arc_half_radians,
+            config.num_samples,
+        );
 
-        commands.spawn((
-            TerrainColliderMarker {
-                parent_body: body_entity,
-                last_rocket_angle: rocket_angle,
-            },
-            RigidBody::Static,
-            Collider::polyline(points, None),
-            Transform::from_translation(body_pos.extend(0.0)),
-        ));
+        let id = commands
+            .spawn((
+                TerrainColliderMarker {
+                    parent_body: body_entity,
+                    last_rocket_angle: rocket_angle,
+                },
+                // RigidBody::Static,
+                Collider::polyline(points, None),
+                // Transform::from_translation(body_pos.extend(0.0)),
+                Transform::default(),
+            ))
+            .id();
+
+        commands.entity(body_entity).add_child(id);
     }
 }
 
@@ -283,7 +300,7 @@ pub fn sync_terrain_collider_to_body(
     }
 }
 
-// ── Plugin ────────────────────────────────────────────────────────────────────
+// ── Plugin ─────────────────o──────────────────────────────────────────────────
 
 pub struct TerrainPlugin;
 
@@ -309,7 +326,6 @@ mod tests {
 
     #[test]
     fn heightmap_test() {
-        
         let planet_seed = 1234.0;
         let moon_seed = 1234.0;
 
@@ -326,4 +342,3 @@ mod tests {
         assert_eq!(height, planet_heights[0] * SCALE + RADIUS);
     }
 }
-

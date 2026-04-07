@@ -2,6 +2,70 @@ use avian2d::prelude::mass_properties::components::RecomputeMassProperties;
 
 use super::*;
 
+struct SeparateStage(Entity);
+
+impl Command for SeparateStage {
+    fn apply(self, world: &mut World) {
+        let (lin_vel, tail) = {
+            let mut q = world.query::<(&LinearVelocity, &Rocket)>();
+            let (lv, r) = q.get(world, self.0).unwrap();
+            (*lv, r.tail)
+        };
+
+        let Some(tail_entity) = tail else { return };
+        let mut q = world.query::<(&RocketPart, &GlobalTransform, &ChildOf)>();
+
+        let mut current_entity = tail_entity;
+        loop {
+            let (part_is_decoupler, gt, parent) = {
+                let Ok((p, g, c)) = q.get(world, current_entity) else { return };
+                (matches!(p, RocketPart::Decoupler), *g, c.parent())
+            };
+
+            println!("Traversing {}", current_entity);
+
+            if part_is_decoupler {
+                let world_tf = gt.compute_transform();
+                let nose = world_tf.local_y().truncate();
+                let sep_vel = *lin_vel - STAGE_SEP_VEL * nose;
+                let soi_body = world.get::<Rocket>(self.0).unwrap().soi_body;
+                let new_rocket = world.spawn((
+                    Visibility::default(),
+                    world_tf,
+                    Rocket { tail: Some(tail_entity), soi_body, ..Default::default() },
+                    RigidBody::Dynamic,
+                    LinearVelocity(sep_vel),
+                    RigidBodyColliders::default(), // pre-seed so on_insert hooks push synchronously
+                )).id();
+
+                world.entity_mut(new_rocket).add_child(current_entity);
+
+                let mut tail_cmds = world.entity_mut(current_entity);
+                tail_cmds.get_mut::<Transform>().unwrap()
+                    .set_if_neq(Transform::default());
+                tail_cmds.insert(ColliderOf{body: new_rocket});
+
+                let mut fix_collider_entity = tail_entity;
+                while fix_collider_entity != current_entity {
+                    let mut ent_mut = world.entity_mut(fix_collider_entity);
+                    ent_mut.insert(ColliderOf {body: new_rocket});
+                    println!("Fixing: {}", fix_collider_entity);
+                    fix_collider_entity = ent_mut.get::<ChildOf>().unwrap().0;
+                }
+
+                world.get_mut::<Rocket>(self.0).unwrap().tail = Some(parent);
+                world.entity_mut(self.0).insert(RecomputeMassProperties);
+                world.entity_mut(new_rocket).insert(RecomputeMassProperties);
+                println!("Parent Rocket colliders: {:?}", world.get::<RigidBodyColliders>(self.0).unwrap());
+                println!("New Rocket colliders: {:?}", world.get::<RigidBodyColliders>(new_rocket).unwrap());
+                return;
+            }
+
+            current_entity = parent;
+        }
+    }
+}
+
 pub fn handle_input(
     keys: Res<ButtonInput<KeyCode>>,
     mut commands: Commands,
@@ -16,10 +80,6 @@ pub fn handle_input(
         With<PlayerRocket>,
     >,
     mut map_view: ResMut<MapView>,
-    mut part_q: Query<
-        (&RocketPart, &GlobalTransform, &mut Transform, &ChildOf),
-        (Without<Rocket>, Without<CelestialBody>),
-    >,
     bodies: Query<(Entity, &Transform, &LinearVelocity, &CelestialBody), Without<Rocket>>,
     planet: Res<PlanetEntity>,
     moon: Res<MoonEntity>,
@@ -46,44 +106,9 @@ pub fn handle_input(
         return;
     }
 
-    // Stage separation — Create new rocket with this stage
+    // Stage separation — find next decoupler and split the rocket there
     if keys.just_pressed(KeyCode::Space) && rocket.tail.is_some() {
-
-        let mut tail = rocket.tail.unwrap();
-        while let Ok((part, gt, mut tf, parent)) = part_q.get_mut(tail) {
-            if matches!(part, RocketPart::Decoupler) {
-                // got it
-                *tf = Transform::default();
-                let nose = tf.local_y().truncate();
-                let sep_vel = **lin_vel - STAGE_SEP_VEL * nose;
-                let tf = gt.compute_transform();
-                commands
-                    .spawn((
-                        Visibility::default(),
-                        tf,
-                        Rocket {
-                            // active_stage: Some(current),
-                            tail: rocket.tail,
-                            soi_body: rocket.soi_body,
-                            ..Default::default()
-                        },
-                        // give the separated stage its own physics body
-                        RigidBody::Dynamic,
-                        LinearVelocity(sep_vel),
-                    ))
-                    // this will remove it from the old rocket automatically, which is nice
-                    .add_child(tail);
-
-                rocket.tail = Some(parent.parent());
-                // parent.get().re
-                commands.entity(rocket_entity).insert(RecomputeMassProperties);
-                
-                return;
-            }
-
-            tail = parent.parent();
-        }
-
+        commands.queue(SeparateStage(rocket_entity));
         return;
     }
 
@@ -97,14 +122,10 @@ pub fn handle_input(
     }
 
     let thrusting = keys.pressed(KeyCode::ArrowUp) || keys.pressed(KeyCode::KeyW);
+    rocket.throttle = if thrusting { 1.0 } else { 0.0 };
 
-    if rocket.landed {
-        if thrusting {
-            rocket.landed = false;
-            rocket.throttle = 1.0;
-        }
-    } else {
-        rocket.throttle = if thrusting { 1.0 } else { 0.0 };
+    if thrusting && rocket.landed {
+        commands.queue(rocket::Takeoff{rocket_entity});
     }
 
     // debugging tools NOTE: Could be moved to commands
@@ -131,7 +152,7 @@ pub fn handle_input(
     if keys.just_pressed(KeyCode::Digit3) {
         // go to moon orbit
         let (_entity, moon_tf, moon_vel, _moon) = bodies.get(moon.0).unwrap();
-        let r0 = MOON_RADIUS * 1.1;
+        let r0 = MOON_RADIUS * 1.3;
         let orbital_v = (G * MOON_MASS / r0).sqrt();
         let new_pos = Vec2::new(moon_tf.translation.x, moon_tf.translation.y + r0);
         tf.translation = Vec3::new(new_pos.x, new_pos.y, 1.0);

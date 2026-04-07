@@ -1,10 +1,8 @@
 use avian2d::prelude::*;
-use bevy::prelude::*;
+use bevy::{log, prelude::*};
 
 use crate::{
-    body::{CelestialBody, PlanetEntity},
-    parts::{PartKind, PartsCatalog, SpritesheetInfo},
-    AppState, G, LANDING_MAX_FORCE, PLANET_RADIUS, ROT_FORCE,
+    AppState, BREAK_FORCE, G, LANDING_FORCE, PLANET_RADIUS, ROT_FORCE, body::{CelestialBody, PlanetEntity}, parts::{PartKind, PartsCatalog, SpritesheetInfo}
 };
 
 // ── Components ────────────────────────────────────────────────────────────────
@@ -15,8 +13,9 @@ pub struct Rocket {
     pub torque: f32,   // -1 or 0 or 1 rotation
     pub crashed: bool,
     pub landed: bool,
-    // landed_body: Option<Entity>, // which body we're on (None when flying)
-    // body_offset: Vec2,            // surface-normal offset from that body's center
+    pub landed_body: Option<Entity>, // which body we're on (None when flying)
+    pub disabled_part: Option<Entity>,
+    pub body_offset: Option<Vec3>,            // surface-normal offset from that body's center
     pub soi_body: Option<Entity>, // which body we're in the SOI of
     pub tail: Option<Entity>,
 
@@ -242,14 +241,18 @@ pub fn physics_step(
     time: Res<Time<Physics>>,
     bodies: Query<(Entity, &Transform, &CelestialBody)>,
     mut rocket_q: Query<
-        (&Transform, &ComputedCenterOfMass, &mut Rocket, Forces),
+        (&mut Transform, &ComputedCenterOfMass, &mut Rocket, Forces),
         Without<CelestialBody>,
     >,
     mut part_parent_q: Query<(&mut RocketPart, &ChildOf)>,
     // mut part_q: Query<&mut RocketPart>,
 ) {
-    for (tf, com, mut rocket, mut forces) in rocket_q.iter_mut() {
-        if rocket.crashed {
+    for (mut tf, com, mut rocket, mut forces) in rocket_q.iter_mut() {
+        if rocket.crashed || rocket.landed {
+            if let Some(landed_body) = rocket.landed_body {
+                let (_end, body_tf, _body) = bodies.get(landed_body).unwrap();
+                tf.translation = body_tf.translation + rocket.body_offset.unwrap();
+            }
             continue;
         }
 
@@ -354,21 +357,102 @@ pub fn physics_step(
     }
 }
 
+struct Land {
+    rocket_entity: Entity,
+    body: Entity,
+    part_entity: Entity,
+}
+
+impl Command for Land {
+
+    fn apply(self, world: &mut World) -> () {
+        // let rocket_transform = world.get::<GlobalTransform>(self.rocket_entity).unwrap();
+        let body_transform = world.get::<Transform>(self.body).unwrap().clone();
+        // let new_transform = rocket_transform.reparented_to(body_transform);
+        // *world.get_mut::<Transform>(self.rocket_entity).unwrap() = new_transform;
+
+        // world.get_entity_mut(self.body).unwrap().add_child(self.rocket_entity);
+
+        // let mut rocket_cmds = world.entity_mut(self.rocket_entity);
+
+        let mut rocket_cmds = world.entity_mut(self.rocket_entity);
+
+        let rocket_transform = rocket_cmds.get::<Transform>().unwrap();
+
+        let rel_pos = rocket_transform.translation - body_transform.translation;
+
+        let mut rocket = rocket_cmds.get_mut::<Rocket>().unwrap();
+        rocket.landed = true;
+        rocket.landed_body = Some(self.body);
+        rocket.disabled_part = Some(self.part_entity);
+        rocket.body_offset = Some(rel_pos);
+
+        rocket_cmds.insert(RigidBodyDisabled);
+
+        // let mut angular_vel = world.get_mut::<AngularVelocity>(self.rocket_entity).unwrap();
+        // angular_vel.0 = 0.0;
+
+        // let mut linear_vel = world.get_mut::<LinearVelocity>(self.rocket_entity).unwrap();
+        // linear_vel.0 = Vec2::ZERO;
+
+        let mut part_cmds = world.entity_mut(self.part_entity);
+        part_cmds.insert(ColliderDisabled);
+    }
+}
+
+pub struct Takeoff {
+    pub rocket_entity: Entity,
+}
+
+impl Command for Takeoff {
+    fn apply(self, world: &mut World) -> () {
+
+
+        // NOTE: If planets rotate in the future that will need to be handled here too!
+
+        let mut rocket = world.get_entity_mut(self.rocket_entity).unwrap();
+        // let parent = rocket.get::<ChildOf>().unwrap().clone();
+        // rocket.remove_parent_in_place();
+        rocket.remove::<RigidBodyDisabled>();
+
+        let mut rocket = rocket.get_mut::<Rocket>().unwrap();
+        rocket.landed = false;
+        let landed_body = rocket.landed_body.unwrap();
+        rocket.landed_body = None;
+
+        if let Some(entity) = rocket.disabled_part {
+            world.entity_mut(entity).remove::<ColliderDisabled>();
+        }
+
+        let planet_vel = world.get::<LinearVelocity>(landed_body).unwrap().clone();
+        let mut rocket_vel = world.get_mut::<LinearVelocity>(self.rocket_entity).unwrap();
+        *rocket_vel = planet_vel;
+
+    }
+}
+
 /// Handles rocket collisions with the planet (detected by avian2d).
 /// The planet has a Collider::circle so avian fires CollisionStarted events when
 /// a rocket's circle collider overlaps it. We decide land vs crash here.
 pub fn collision_handler(
     mut rocket_q: Query<&mut Rocket, Without<CelestialBody>>,
+    body_q: Query<&CelestialBody>,
     mut commands: Commands,
     collisions: Collisions,
     part_q: Query<&ChildOf, (With<RocketPart>, Without<Rocket>)>,
+    collider_of_q: Query<&ColliderOf>,
     time: Res<Time<Physics>>,
 ) {
     for contact_pair in collisions.iter() {
-        let (mut rocket, rocket_entity, part_entity) = if let Ok(rocket) = rocket_q.get_mut(contact_pair.body1.unwrap()) {
-            (rocket, contact_pair.body1.unwrap(), contact_pair.collider1)
-        } else if let Ok(rocket) = rocket_q.get_mut(contact_pair.body2.unwrap()) {
-            (rocket, contact_pair.body2.unwrap(), contact_pair.collider2)
+        // Resolve the current body via ColliderOf rather than the (potentially stale)
+        // body1/body2 baked into the contact pair at broad-phase time.
+        let body1 = collider_of_q.get(contact_pair.collider1).map(|c| c.body).ok();
+        let body2 = collider_of_q.get(contact_pair.collider2).map(|c| c.body).ok();
+
+        let (mut rocket, rocket_entity, part_entity, other_entity) = if let Some(Ok(rocket)) = body1.map(|b| rocket_q.get_mut(b)) {
+            (rocket, body1.unwrap(), contact_pair.collider1, body2.unwrap_or(contact_pair.collider2))
+        } else if let Some(Ok(rocket)) = body2.map(|b| rocket_q.get_mut(b)) {
+            (rocket, body2.unwrap(), contact_pair.collider2, body1.unwrap_or(contact_pair.collider1))
         } else {
             continue;
         };
@@ -379,14 +463,29 @@ pub fn collision_handler(
         // for contact_pair in collisions.collisions_with(rocket_entity) {
         let total_impulse = contact_pair.total_normal_impulse_magnitude();
 
-        println!("Impulse total: {}", total_impulse);
+        // println!("Impulse total: {}", total_impulse);
         let force_total = total_impulse / time.delta_secs();
-        println!("Force total: {}", force_total);
+        // println!("Force total: {}", force_total);
 
-        if force_total < LANDING_MAX_FORCE {
+
+        if rocket.landed {
             continue;
         }
 
+        if force_total < LANDING_FORCE {
+            // land rocket...
+            if body_q.contains(other_entity) {
+                log::info!("Landing Rocket force is only {}", force_total);
+                commands.queue(Land{rocket_entity, body: other_entity, part_entity});
+            }
+        }
+
+
+        if force_total < BREAK_FORCE {
+            continue;
+        }
+
+        log::info!("Part {} breaking on contact with {}", part_entity, other_entity);
 
         // TODO: If normal_impusle and tangent_impulse are less than something, switch to landed
         // or maybe rapier's internal islanding could be querried to decide if it thinks we are landed
@@ -405,7 +504,7 @@ pub fn collision_handler(
         {
             // we gotta move it
             
-                rocket.tail = Some(parent);
+            rocket.tail = Some(parent);
         }
         // TODO: create new rocket with our children if needed
         commands.entity(part_entity).despawn();
