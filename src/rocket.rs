@@ -257,7 +257,7 @@ pub fn physics_step(
         }
 
         let dt = time.delta_secs();
-        let pos =
+        let pos = 
             tf.translation.truncate() + (tf.rotation * Vec3::new(com.x, com.y, 0.0)).truncate();
 
         let (soi_ent, soi_body_tf, _soi_body) = bodies.get(rocket.soi_body.unwrap()).unwrap();
@@ -302,6 +302,17 @@ pub fn physics_step(
             }
 
             forces.apply_linear_acceleration((to_body / dist) * (G * body.mass / dist_sq));
+
+            if let Some(atmosphere) = &body.atmosphere {
+                if dist_real < atmosphere.extent {
+                    // calculate atmospheric drag...
+                    // TODO: calculate relative velocity
+                    // max thickness (1) at surface
+                    let atmos_thickness: f32 = ((atmosphere.extent - dist_real) / (atmosphere.extent - body.radius)).max(0.0);
+                    let (vel_dir, vel_mag) = forces.linear_velocity().normalize_and_length();
+                    forces.apply_force(-vel_dir * (vel_mag * vel_mag) * atmosphere.drag * atmos_thickness);
+                }
+            }
         }
 
         // Thrust — read engine thrust and consume fuel from the active stage's children
@@ -447,20 +458,19 @@ pub fn collision_handler(
     mut commands: Commands,
     collisions: Collisions,
     part_q: Query<&ChildOf, (With<RocketPart>, Without<Rocket>)>,
-    collider_of_q: Query<&ColliderOf>,
     vel_q: Query<&LinearVelocity>,
     time: Res<Time<Physics>>,
 ) {
     for contact_pair in collisions.iter() {
-        // Resolve the current body via ColliderOf rather than the (potentially stale)
-        // body1/body2 baked into the contact pair at broad-phase time.
-        let body1 = collider_of_q.get(contact_pair.collider1).map(|c| c.body).ok();
-        let body2 = collider_of_q.get(contact_pair.collider2).map(|c| c.body).ok();
+        
+        // NOTE: These are difficult to get not to be stale if things are reparented... probably fixed but maybe not
+        let body1 = contact_pair.body1.unwrap();
+        let body2 = contact_pair.body2.unwrap();
 
-        let (mut rocket, rocket_entity, part_entity, other_entity) = if let Some(Ok(rocket)) = body1.map(|b| rocket_q.get_mut(b)) {
-            (rocket, body1.unwrap(), contact_pair.collider1, body2.unwrap_or(contact_pair.collider2))
-        } else if let Some(Ok(rocket)) = body2.map(|b| rocket_q.get_mut(b)) {
-            (rocket, body2.unwrap(), contact_pair.collider2, body1.unwrap_or(contact_pair.collider1))
+        let (mut rocket, rocket_entity, part_entity, other_entity) = if let Ok(rocket) = rocket_q.get_mut(body1) {
+            (rocket, body1, contact_pair.collider1, body2)
+        } else if let Ok(rocket) =rocket_q.get_mut(body2) {
+            (rocket, body2, contact_pair.collider2, body1)
         } else {
             continue;
         };

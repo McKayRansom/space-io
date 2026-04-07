@@ -48,7 +48,10 @@ impl Command for SeparateStage {
                 let mut fix_collider_entity = tail_entity;
                 while fix_collider_entity != current_entity {
                     let mut ent_mut = world.entity_mut(fix_collider_entity);
-                    ent_mut.insert(ColliderOf {body: new_rocket});
+                    let collider = ent_mut.take::<Collider>().unwrap();
+                    // ent_mut.insert(ColliderOf {body: new_rocket});
+                    // reinserting the collider seems to ACTUALLY fix it
+                    ent_mut.insert(collider);
                     println!("Fixing: {}", fix_collider_entity);
                     fix_collider_entity = ent_mut.get::<ChildOf>().unwrap().0;
                 }

@@ -16,6 +16,12 @@ pub struct CelestialBody {
     pub soi: Option<f32>,       // radisu of the sphere of influence
     orbital_radius: f32,
     parent_mass: Option<f32>,
+    pub atmosphere: Option<Atmosphere>,
+}
+
+pub struct Atmosphere {
+    pub extent: f32,
+    pub drag: f32,
 }
 
 impl CelestialBody {
@@ -25,6 +31,7 @@ impl CelestialBody {
         orbital_radius: f32,
         parent: Option<Entity>,
         parent_mass: Option<f32>,
+        atmosphere: Option<Atmosphere>,
     ) -> Self {
         let body = Self {
             mass,
@@ -36,6 +43,7 @@ impl CelestialBody {
             soi: parent_mass
                 .map(|parent_mass| orbital_radius * (mass / parent_mass).powf(2.0 / 5.0)),
             orbital_radius,
+            atmosphere,
         };
         // println!("Body radius: {} soi: {}", radius, body.soi.unwrap_or(f32::MAX));
         body
@@ -160,7 +168,17 @@ fn setup_bodies(
         &mut commands,
         &mut meshes,
         &shader_mats,
-        CelestialBody::new(PLANET_MASS, PLANET_RADIUS, 0.0, None, None),
+        CelestialBody::new(
+            PLANET_MASS,
+            PLANET_RADIUS,
+            0.0,
+            None,
+            None,
+            Some(Atmosphere {
+                extent: PLANET_RADIUS * 1.2,
+                drag: 0.2,
+            }),
+        ),
         BodyTerrainParams {
             base_radius: PLANET_RADIUS,
             height_scale: (PLANET_RADIUS / 0.8) * 0.2,
@@ -186,6 +204,7 @@ fn setup_bodies(
             MOON_ORBIT,
             Some(planet),
             Some(PLANET_MASS),
+            None,
         ),
         BodyTerrainParams {
             base_radius: MOON_RADIUS,
@@ -215,7 +234,11 @@ pub fn update_bodies(
         let pos = tf.translation.truncate();
         let mut accel = Vec2::ZERO;
 
-        let other_pos = body_pos.get(body.parent.unwrap()).unwrap().translation.truncate();
+        let other_pos = body_pos
+            .get(body.parent.unwrap())
+            .unwrap()
+            .translation
+            .truncate();
         let other_mass = body.parent_mass.unwrap();
 
         let to_other = other_pos - pos;
@@ -242,7 +265,6 @@ impl Plugin for CelestialBodyPlugin {
         app.add_systems(
             FixedUpdate,
             (update_bodies,).run_if(in_state(AppState::Playing)),
-
         );
     }
 }
