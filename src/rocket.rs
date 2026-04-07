@@ -256,42 +256,49 @@ pub fn physics_step(
             continue;
         }
 
-        // While landed, stay stationary (or match body velocity for moving bodies)
-        // if rocket.landed {
-        //     if let Some(e) = rocket.landed_body {
-        //         if let Ok((_, _body_tf, body)) = bodies.get(e) {
-        //             rocket.velocity = body.velocity;
-        //             lin_vel.0 = body.velocity;
-        //         }
-        //     }
-        //     continue;
-        // }
-
         let dt = time.delta_secs();
         let pos =
             tf.translation.truncate() + (tf.rotation * Vec3::new(com.x, com.y, 0.0)).truncate();
 
+        let (soi_ent, soi_body_tf, _soi_body) = bodies.get(rocket.soi_body.unwrap()).unwrap();
+        let soi_body_pos = soi_body_tf.translation.truncate();
         let mut lowest_mass: f32 = f32::MAX;
-        // let mut soi
 
         for (entity, body_tf, body) in bodies.iter() {
-            // Gravity from parent celestial body
-            let to_body = body_tf.translation.truncate() - pos;
+            // For the SOI body, apply gravity from the rocket's actual position.
+            // For all other bodies, apply gravity as if the rocket is at the SOI body's
+            // position (patched conics approximation — the parent body accelerates the whole
+            // SOI system, so only the differential matters for local motion prediction).
+            let to_body_real = body_tf.translation.truncate() - pos;
+            let dist_sq_real = to_body_real.length_squared();
+            if dist_sq_real < 1.0 {
+                continue;
+            }
+            let dist_real = dist_sq_real.sqrt();
 
+            if dist_real > body.soi.unwrap_or(f32::MAX) {
+                continue;
+            }
+
+            // For gravity force, use actual position for the SOI body, but the SOI body's
+            // position for all others (patched conics: parent gravity cancels in local frame).
+            let to_body = if entity == soi_ent {
+                to_body_real
+            } else {
+                body_tf.translation.truncate() - soi_body_pos
+            };
             let dist_sq = to_body.length_squared();
             if dist_sq < 1.0 {
                 continue;
             }
             let dist = dist_sq.sqrt();
 
-            if dist > body.soi.unwrap_or(f32::MAX) {
-                continue;
-            }
-
             if body.mass < lowest_mass {
-                // println!("SOI BODY: {} mass: {}" , soi_body, body.mass);
                 lowest_mass = body.mass;
                 rocket.soi_body = Some(entity);
+                if entity != soi_ent {
+                    log::info!("SOI Changed. Body: {} mass: {}" , soi_ent, body.mass);
+                }
             }
 
             forces.apply_linear_acceleration((to_body / dist) * (G * body.mass / dist_sq));
