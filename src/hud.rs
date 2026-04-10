@@ -193,18 +193,19 @@ pub fn draw_orbit(gizmos: &mut Gizmos, focus: Vec2, orbit: OrbitalParameters) {
 
     // Sample the ellipse and draw as a closed line strip
     const SEGMENTS: usize = 128;
-    let points: Vec<Vec2> = (0..=SEGMENTS)
+    let points: Vec<Vec3> = (0..=SEGMENTS)
         .map(|i| {
             let theta = i as f32 / SEGMENTS as f32 * std::f32::consts::TAU;
-            focus
+            (focus
                 + orbit.center
                 + orbit
                     .rot
                     .rotate(Vec2::new(orbit.a * theta.cos(), orbit.b * theta.sin()))
+        ).extend(1.0) // draw behind stuff
         })
         .collect();
 
-    gizmos.linestrip_2d(points, color);
+    gizmos.linestrip(points, color);
 }
 
 pub fn update_trajectory(
@@ -214,7 +215,11 @@ pub fn update_trajectory(
     >,
     bodies: Query<(&Transform, &LinearVelocity, &CelestialBody)>,
     mut gizmos: Gizmos,
+    map_view: Res<MapView>,
 ) {
+    if !map_view.0 {
+        return;
+    }
     // draw moon trajectory
     for (bt, vel, body) in bodies.iter() {
         if body.parent.is_none() {

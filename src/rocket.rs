@@ -161,8 +161,8 @@ pub fn spawn_default_rocket(commands: &mut Commands, planet: &Entity) {
             PlayerRocket,
             // avian2d physics
             RigidBody::Dynamic,
-            Restitution::new(0.4),
-            Friction::new(0.9),
+            // Restitution::new(0.4),
+            // Friction::new(0.9),
         ))
         .id();
 
@@ -413,6 +413,7 @@ impl Command for Land {
         // let mut linear_vel = world.get_mut::<LinearVelocity>(self.rocket_entity).unwrap();
         // linear_vel.0 = Vec2::ZERO;
 
+        // TODO: This causes a panic in avian2d's islanding code if this is called after avian2d decides the body is at rest/creates an island
         let mut part_cmds = world.entity_mut(self.part_entity);
         part_cmds.insert(ColliderDisabled);
     }

@@ -32,6 +32,8 @@ use crate::editor::EditorPlugin;
 // ── Physics constants  ─────────────────────────
 const G: f32 = 10.0;
 const PLANET_RADIUS: f32 = 6400.0;
+const PLANET_HEIGHT_MAX: f32 = 7000.0;
+const PLANET_ATMOSPHERE_MAX: f32 = 8000.0;
 const PLANET_SURFACE_GRAVITY: f32 = 10.0;
 const PLANET_MASS: f32 = PLANET_SURFACE_GRAVITY * (PLANET_RADIUS * PLANET_RADIUS) / G;
 const ROT_FORCE: f32 = 3000.0; // no idea on the units on this
@@ -70,7 +72,7 @@ fn main() {
     App::new()
         .add_plugins(FrameTimeDiagnosticsPlugin::new(120))
         .add_plugins(PhysicsPlugins::default())
-        .add_plugins(PhysicsDebugPlugin::default()) // Enables debug rendering
+        // .add_plugins(PhysicsDebugPlugin::default()) // Enables debug rendering
         .insert_resource(Gravity(Vec2::ZERO)) // we apply custom N-body gravity manually
         .add_plugins(
             DefaultPlugins
