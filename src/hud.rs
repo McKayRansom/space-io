@@ -1,4 +1,6 @@
-use avian2d::prelude::{ComputedCenterOfMass, LinearVelocity};
+use std::f32::consts::PI;
+
+use avian2d::{math::FRAC_PI_2, prelude::{ComputedCenterOfMass, LinearVelocity}};
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
@@ -17,6 +19,7 @@ pub enum HudLabel {
     Vel,
     Fuel,
     Status,
+    Nav
 }
 #[derive(Component)]
 pub struct HudFps;
@@ -83,6 +86,23 @@ pub fn hud_init(mut commands: Commands, asset_server: Res<AssetServer>) {
         },
         HudLabel::Status,
     ));
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(12.),
+            left: Val::Px(0.),
+            right: Val::Px(0.),
+            justify_content: JustifyContent::Center,
+            ..default()
+        })
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new("[   ]"),
+                mono.clone(),
+                TextColor(Color::WHITE),
+                HudLabel::Nav,
+            ));
+        });
     commands.spawn((
         Text::new("FPS --"),
         TextFont {
@@ -100,7 +120,7 @@ pub fn hud_init(mut commands: Commands, asset_server: Res<AssetServer>) {
     ));
     // Controls hint (bottom-left)
     commands.spawn((
-        Text::new("A/D: rotate     W/↑: thrust     SPACE: stage     M: map     R: reset"),
+        Text::new("A/D: rotate  W/[UP]: thrust  [SPACE]: stage   M: map   R: reset"),
         TextFont {
             font_size: 13.0,
             ..default()
@@ -289,9 +309,13 @@ pub fn follow_camera(
 
 pub fn update_hud(
     rocket_q: Query<(&Transform, &LinearVelocity, &Rocket), With<PlayerRocket>>,
+    planet_q: Query<&Transform, With<CelestialBody>>,
     mut hud_q: Query<(&HudLabel, &mut Text)>,
 ) {
     let Ok((tf, velocity, rocket)) = rocket_q.single() else {
+        return;
+    };
+    let Ok(body_tf) = planet_q.get(rocket.soi_body.unwrap()) else {
         return;
     };
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);
@@ -318,6 +342,21 @@ pub fn update_hud(
                 } else {
                     String::new()
                 }
+            }
+            HudLabel::Nav => {
+                const NAV_SIZE: usize = 32;
+                let radial = (tf.translation.truncate() - body_tf.translation.truncate()).normalize_or_zero();
+                let nose = (tf.rotation * Vec3::Y).truncate();
+                let angle = -radial.angle_to(nose);
+                let (mark, rel_angle) = if angle.abs() < FRAC_PI_2 {
+                    // we are pointing "UP"
+                    ("U", -angle + FRAC_PI_2)
+                } else {
+                    // we are pointing "DOWN"
+                    ("D", angle - FRAC_PI_2)
+                };
+                let counts = ((rel_angle / PI) * NAV_SIZE as f32).round().max(0.0) as usize;
+                format!("[{}{}{}]", " ".repeat(counts), mark, " ".repeat(NAV_SIZE - counts))
             }
         });
     }
