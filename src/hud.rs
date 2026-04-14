@@ -21,11 +21,12 @@ pub enum HudLabel {
 #[derive(Component)]
 pub struct HudFps;
 
-pub fn hud_init(mut commands: Commands) {
+pub fn hud_init(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Camera – start centered on the rocket
     commands.spawn((Camera2d, Transform::from_xyz(0., PLANET_RADIUS, 0.)));
 
     let mono = TextFont {
+        font: asset_server.load("VT323-Regular.ttf"),
         font_size: 18.0,
         ..default()
     };
