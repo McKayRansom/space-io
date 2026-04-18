@@ -340,7 +340,8 @@ impl Plugin for HudPlugin {
         );
         app.add_systems(
             FixedUpdate,
-            (follow_camera,).run_if(in_state(AppState::Playing)),
+            (follow_camera,),
+            // (follow_camera,).run_if(in_state(AppState::Playing)),
         );
     }
 }

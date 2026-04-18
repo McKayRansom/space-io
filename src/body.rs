@@ -142,7 +142,7 @@ pub fn spawn_body(
     // ));
 }
 
-fn setup_bodies(
+pub fn setup_bodies(
     mut commands: Commands,
     mut meshes: ResMut<Assets<Mesh>>,
     // materials: ResMut<Assets<ColorMaterial>>,
@@ -261,7 +261,7 @@ pub struct CelestialBodyPlugin;
 
 impl Plugin for CelestialBodyPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, setup_bodies);
+        app.add_systems(OnEnter(AppState::Playing), setup_bodies);
         app.add_systems(
             FixedUpdate,
             (update_bodies,).run_if(in_state(AppState::Playing)),

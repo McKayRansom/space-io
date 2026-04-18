@@ -86,6 +86,7 @@ pub fn handle_input(
     bodies: Query<(Entity, &Transform, &LinearVelocity, &CelestialBody), Without<Rocket>>,
     planet: Res<PlanetEntity>,
     moon: Res<MoonEntity>,
+    player_rocket: Res<PlayerRocketSave>,
     mut time: ResMut<Time<Physics>>,
 ) {
     let Ok((rocket_entity, mut tf, mut rocket, mut lin_vel)) = q.single_mut() else {
@@ -101,7 +102,7 @@ pub fn handle_input(
     if keys.just_pressed(KeyCode::KeyR) {
         commands.entity(rocket_entity).despawn();
 
-        spawn_default_rocket(&mut commands, &planet.0);
+        rocket_init(commands, player_rocket, planet);
         return;
     }
 

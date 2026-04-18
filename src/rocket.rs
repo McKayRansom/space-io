@@ -2,8 +2,10 @@ use avian2d::prelude::*;
 use bevy::{log, prelude::*};
 
 use crate::{
-    AppState, BREAK_FORCE, G, LANDING_FORCE, PLANET_RADIUS, ROT_FORCE, body::{CelestialBody, PlanetEntity}, parts::{PartKind, PartsCatalog, SpritesheetInfo}
+    AppState, BREAK_FORCE, G, LANDING_FORCE, PLANET_RADIUS, ROT_FORCE, body::{CelestialBody, PlanetEntity, setup_bodies}, parts::{PartKind, PartsCatalog, SpritesheetInfo}
 };
+
+use serde::{Deserialize, Serialize};
 
 // ── Components ────────────────────────────────────────────────────────────────
 
@@ -15,8 +17,8 @@ pub struct Rocket {
     pub landed: bool,
     pub landed_body: Option<Entity>, // which body we're on (None when flying)
     pub disabled_part: Option<Entity>,
-    pub body_offset: Option<Vec3>,            // surface-normal offset from that body's center
-    pub soi_body: Option<Entity>, // which body we're in the SOI of
+    pub body_offset: Option<Vec3>, // surface-normal offset from that body's center
+    pub soi_body: Option<Entity>,  // which body we're in the SOI of
     pub tail: Option<Entity>,
 
     // cached-each-frame
@@ -70,6 +72,20 @@ pub enum RocketPart {
 
 #[derive(Component)]
 pub struct Exhaust;
+
+/// Records which part definition created this entity, for save/load.
+#[derive(Component)]
+pub struct PartId(pub String);
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RocketSave {
+    pub name: String,
+    pub parts: Vec<String>,
+}
+
+// the player's current rocketsave
+#[derive(Resource)]
+pub struct PlayerRocketSave(pub RocketSave);
 
 pub struct RocketBuildCommand {
     pub rocket: Entity,
@@ -128,7 +144,14 @@ impl Command for RocketBuildCommand {
                 .id()
         });
 
-        let mut entity = world.spawn((sprite, transform, part, collide, Mass(part_def.mass)));
+        let mut entity = world.spawn((
+            sprite,
+            transform,
+            part,
+            collide,
+            Mass(part_def.mass),
+            PartId(self.part_id.clone()),
+        ));
         if let Some(exhaust) = exhaust {
             entity.add_child(exhaust);
         }
@@ -145,63 +168,91 @@ impl Command for RocketBuildCommand {
     }
 }
 
-/// Spawn the default two-stage rocket.
-pub fn spawn_default_rocket(commands: &mut Commands, planet: &Entity) {
-    let rocket = commands
-        .spawn((
-            Transform::from_xyz(0., PLANET_RADIUS * 1.10, 1.0),
-            Visibility::default(),
-            Rocket {
-                // active_stage: Some(stage1),
-                // stage_queue: vec![stage2],
-                soi_body: Some(*planet),
-                // tail: Some(tail1),
-                ..Default::default()
-            },
-            PlayerRocket,
-            // avian2d physics
-            RigidBody::Dynamic,
-            // Restitution::new(0.4),
-            // Friction::new(0.9),
-        ))
-        .id();
+pub struct SpawnRocketCommand {
+    pub transform: Transform,
+    pub rocket_save: RocketSave,
+    pub planet: Option<Entity>,
+}
 
-    commands.queue(RocketBuildCommand {
-        rocket,
-        part_id: "command_pod_mk1".into(),
-    });
-    commands.queue(RocketBuildCommand {
-        rocket,
-        part_id: "decoupler_mk1".into(),
-    });
-    commands.queue(RocketBuildCommand {
-        rocket,
-        part_id: "fuel_tank_mk1".into(),
-    });
-    commands.queue(RocketBuildCommand {
-        rocket,
-        part_id: "engine_mk1".into(),
-    });
-    commands.queue(RocketBuildCommand {
-        rocket,
-        part_id: "decoupler_mk1".into(),
-    });
-    commands.queue(RocketBuildCommand {
-        rocket,
-        part_id: "fuel_tank_mk1".into(),
-    });
-    commands.queue(RocketBuildCommand {
-        rocket,
-        part_id: "fuel_tank_mk1".into(),
-    });
-    commands.queue(RocketBuildCommand {
-        rocket,
-        part_id: "engine_mk1".into(),
-    });
-    commands.queue(RocketBuildCommand {
-        rocket,
-        part_id: "engine_mk1".into(),
-    });
+impl Command for SpawnRocketCommand {
+    fn apply(self, world: &mut World) -> () {
+        let state = world.resource::<State<AppState>>().get().clone();
+
+        let rocket = world
+            .spawn((
+                self.transform,
+                Visibility::default(),
+                Rocket {
+                    soi_body: self.planet,
+                    // tail: Some(tail1),
+                    ..Default::default()
+                },
+                PlayerRocket,
+                // avian2d physics
+                RigidBody::Dynamic,
+                // Restitution::new(0.4),
+                // Friction::new(0.9),
+                DespawnOnExit(state),
+            ))
+            .id();
+
+        for part_id in &self.rocket_save.parts {
+            RocketBuildCommand {
+                rocket,
+                part_id: part_id.clone(),
+            }
+            .apply(world);
+        }
+    }
+}
+
+pub fn save_rocket(world: &mut World, rocket_entity: Entity) -> RocketSave {
+    let rocket = world.get::<Rocket>(rocket_entity).unwrap();
+    let Some(tail) = rocket.tail else {
+        warn!("SaveRocketCommand: rocket has no parts");
+        return RocketSave { name: "empty".into(), parts: Vec::new()};
+    };
+
+    // Walk chain from tail → head, collecting part IDs
+    let mut parts: Vec<String> = Vec::new();
+    let mut current = tail;
+    loop {
+        if let Some(part_id) = world.get::<PartId>(current) {
+            parts.push(part_id.0.clone());
+        }
+        let Some(child_of) = world.get::<ChildOf>(current) else {
+            break;
+        };
+        let parent = child_of.parent();
+        if parent == rocket_entity {
+            break;
+        }
+        current = parent;
+    }
+    parts.reverse(); // now top → bottom (same order as build commands)
+
+    RocketSave {
+        name: "Unnamed - TODO".into(),
+        parts,
+    }
+}
+
+pub fn default_rocket() -> RocketSave {
+    RocketSave {
+        name: "Default Rocket".into(),
+        parts: [
+            "command_pod_mk1".into(),
+            "decoupler_mk1".into(),
+            "fuel_tank_mk1".into(),
+            "engine_mk1".into(),
+            "decoupler_mk1".into(),
+            "fuel_tank_mk1".into(),
+            "fuel_tank_mk1".into(),
+            "engine_mk1".into(),
+            "engine_mk1".into(),
+        ]
+        .to_vec(),
+    }
 }
 
 // ── Animation ─────────────────────────────────────────────────────────────────────
@@ -233,8 +284,16 @@ pub fn animate_sprite(
     }
 }
 
-pub fn rocket_init(mut commands: Commands, planet_entity: Res<PlanetEntity>) {
-    spawn_default_rocket(&mut commands, &planet_entity.0);
+pub fn rocket_init(
+    mut commands: Commands,
+    player_rocket: Res<PlayerRocketSave>,
+    planet_entity: Res<PlanetEntity>,
+) {
+    commands.queue(SpawnRocketCommand {
+        transform: Transform::from_xyz(0., PLANET_RADIUS * 1.10, 1.0),
+        rocket_save: player_rocket.0.clone(),
+        planet: Some(planet_entity.0),
+    });
 }
 
 pub fn physics_step(
@@ -257,7 +316,7 @@ pub fn physics_step(
         }
 
         let dt = time.delta_secs();
-        let pos = 
+        let pos =
             tf.translation.truncate() + (tf.rotation * Vec3::new(com.x, com.y, 0.0)).truncate();
 
         let (soi_ent, soi_body_tf, _soi_body) = bodies.get(rocket.soi_body.unwrap()).unwrap();
@@ -297,7 +356,7 @@ pub fn physics_step(
                 lowest_mass = body.mass;
                 rocket.soi_body = Some(entity);
                 if entity != soi_ent {
-                    log::info!("SOI Changed. Body: {} mass: {}" , soi_ent, body.mass);
+                    log::info!("SOI Changed. Body: {} mass: {}", soi_ent, body.mass);
                 }
             }
 
@@ -308,9 +367,13 @@ pub fn physics_step(
                     // calculate atmospheric drag...
                     // TODO: calculate relative velocity
                     // max thickness (1) at surface
-                    let atmos_thickness: f32 = ((atmosphere.extent - dist_real) / (atmosphere.extent - body.radius)).max(0.0);
+                    let atmos_thickness: f32 = ((atmosphere.extent - dist_real)
+                        / (atmosphere.extent - body.radius))
+                        .max(0.0);
                     let (vel_dir, vel_mag) = forces.linear_velocity().normalize_and_length();
-                    forces.apply_force(-vel_dir * (vel_mag * vel_mag) * atmosphere.drag * atmos_thickness);
+                    forces.apply_force(
+                        -vel_dir * (vel_mag * vel_mag) * atmosphere.drag * atmos_thickness,
+                    );
                 }
             }
         }
@@ -382,7 +445,6 @@ struct Land {
 }
 
 impl Command for Land {
-
     fn apply(self, world: &mut World) -> () {
         // let rocket_transform = world.get::<GlobalTransform>(self.rocket_entity).unwrap();
         let body_transform = world.get::<Transform>(self.body).unwrap().clone();
@@ -405,7 +467,7 @@ impl Command for Land {
         rocket.disabled_part = Some(self.part_entity);
         rocket.body_offset = Some(rel_pos);
 
-        rocket_cmds.insert(RigidBodyDisabled);
+        // rocket_cmds.insert(RigidBodyDisabled);
 
         // let mut angular_vel = world.get_mut::<AngularVelocity>(self.rocket_entity).unwrap();
         // angular_vel.0 = 0.0;
@@ -414,8 +476,8 @@ impl Command for Land {
         // linear_vel.0 = Vec2::ZERO;
 
         // TODO: This causes a panic in avian2d's islanding code if this is called after avian2d decides the body is at rest/creates an island
-        let mut part_cmds = world.entity_mut(self.part_entity);
-        part_cmds.insert(ColliderDisabled);
+        // let mut part_cmds = world.entity_mut(self.part_entity);
+        // part_cmds.insert(ColliderDisabled);
     }
 }
 
@@ -425,8 +487,6 @@ pub struct Takeoff {
 
 impl Command for Takeoff {
     fn apply(self, world: &mut World) -> () {
-
-
         // NOTE: If planets rotate in the future that will need to be handled here too!
 
         let mut rocket = world.get_entity_mut(self.rocket_entity).unwrap();
@@ -446,7 +506,6 @@ impl Command for Takeoff {
         let planet_vel = world.get::<LinearVelocity>(landed_body).unwrap().clone();
         let mut rocket_vel = world.get_mut::<LinearVelocity>(self.rocket_entity).unwrap();
         *rocket_vel = planet_vel;
-
     }
 }
 
@@ -463,18 +522,18 @@ pub fn collision_handler(
     time: Res<Time<Physics>>,
 ) {
     for contact_pair in collisions.iter() {
-        
         // NOTE: These are difficult to get not to be stale if things are reparented... probably fixed but maybe not
         let body1 = contact_pair.body1.unwrap();
         let body2 = contact_pair.body2.unwrap();
 
-        let (mut rocket, rocket_entity, part_entity, other_entity) = if let Ok(rocket) = rocket_q.get_mut(body1) {
-            (rocket, body1, contact_pair.collider1, body2)
-        } else if let Ok(rocket) =rocket_q.get_mut(body2) {
-            (rocket, body2, contact_pair.collider2, body1)
-        } else {
-            continue;
-        };
+        let (mut rocket, rocket_entity, part_entity, other_entity) =
+            if let Ok(rocket) = rocket_q.get_mut(body1) {
+                (rocket, body1, contact_pair.collider1, body2)
+            } else if let Ok(rocket) = rocket_q.get_mut(body2) {
+                (rocket, body2, contact_pair.collider2, body1)
+            } else {
+                continue;
+            };
         // for (rocket_entity, mut rocket) in &mut rocket_q {
         // let mut total_impulse = 0.0;
         // let mut contact_entity: Option<Entity> = None;
@@ -495,23 +554,27 @@ pub fn collision_handler(
         let other_vel = vel_q.get(other_entity).unwrap();
         let rel_vel = (other_vel.0 - rocket_vel.0).length();
 
-        if force_total < LANDING_FORCE && rel_vel < 1.0 {
-            // land rocket...
-            if body_q.contains(other_entity) {
-                log::info!("Landing Rocket force is only {} rel vel {}", force_total, rel_vel);
-                // mark as landed now so other collisions don't screw things up before the Land command goes through
-                rocket.landed = true;
-                commands.queue(Land{rocket_entity, body: other_entity, part_entity});
-            }
+        // if force_total < LANDING_FORCE && rel_vel < 1.0 {
+        //     // land rocket...
+        //     if body_q.contains(other_entity) {
+        //         log::info!("Landing Rocket force is only {} rel vel {}", force_total, rel_vel);
+        //         // mark as landed now so other collisions don't screw things up before the Land command goes through
+        //         rocket.landed = true;
+        //         commands.queue(Land{rocket_entity, body: other_entity, part_entity});
+        //     }
+        //     continue;
+        // }
+
+        if force_total < BREAK_FORCE || rel_vel < 5.0 {
             continue;
         }
 
-
-        if force_total < BREAK_FORCE || rel_vel < 10.0 {
-            continue;
-        }
-
-        log::info!("Part {} breaking on contact with {} rel_vel {}", part_entity, other_entity, rel_vel);
+        log::info!(
+            "Part {} breaking on contact with {} rel_vel {}",
+            part_entity,
+            other_entity,
+            rel_vel
+        );
 
         // TODO: If normal_impusle and tangent_impulse are less than something, switch to landed
         // or maybe rapier's internal islanding could be querried to decide if it thinks we are landed
@@ -519,17 +582,14 @@ pub fn collision_handler(
 
         let parent = part_q.get(part_entity).unwrap().parent();
         if parent == rocket_entity {
-            // no other parents, despawn 
+            // no other parents, despawn
             commands.entity(parent).despawn();
             continue;
         }
 
-        if rocket
-            .tail
-            .is_some_and(|tail| tail == part_entity)
-        {
+        if rocket.tail.is_some_and(|tail| tail == part_entity) {
             // we gotta move it
-            
+
             rocket.tail = Some(parent);
         }
         // TODO: create new rocket with our children if needed
@@ -615,7 +675,8 @@ pub struct RocketPlugin;
 
 impl Plugin for RocketPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(OnEnter(AppState::Playing), rocket_init)
+        app.insert_resource(PlayerRocketSave(default_rocket()))
+            .add_systems(OnEnter(AppState::Playing), rocket_init.after(setup_bodies))
             .add_systems(
                 // TODO: Do these need to be moved to a physics schedule?
                 FixedUpdate,

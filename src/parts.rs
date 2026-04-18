@@ -5,8 +5,7 @@ use bevy::{
 use serde::Deserialize;
 
 use crate::{
-    rocket::{AnimationIndices, AnimationTimer},
-    AppState,
+    AppState, STARTING_STATE, rocket::{AnimationIndices, AnimationTimer}
 };
 
 // ── Part data definitions (loaded from assets/parts.ron) ──────────────────────
@@ -156,7 +155,7 @@ pub fn build_parts_catalog(
         info!("Parts loaded: {} part(s)", config.parts.len());
         commands.insert_resource(PartsCatalog(config.parts.clone()));
         commands.remove_resource::<PartsConfigHandle>();
-        next_state.set(AppState::Playing);
+        next_state.set(STARTING_STATE);
     }
 }
 

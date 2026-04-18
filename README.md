@@ -66,6 +66,11 @@ cargo run
 - Procedural parts: Lots of mods did this for KSP, and people were hoping this would be in KSP 2. Should actually make my life a lot easier if done correctly!
 - Pixel rockets: Have people draw their rockets (full customizable) and draw the layout of fuel tanks/etc...
 
+- Different from KSP: Cuter art style with blockier ships: Supply more short and stubby parts
+- TO fix collisions: Try using the before and after impact handlers to reset the rocket's velocity if we need to despawn a part...
+
+- to fix landing: 
+
 ## TODO
 - [ ] Refactor parts heirarchy - Needs real stage queue again probably...
 - [ ] Non-physics warp

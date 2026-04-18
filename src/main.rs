@@ -58,8 +58,11 @@ const MAP_VIEW_SCALE: f32 = 35.0;
 pub enum AppState {
     #[default]
     Loading,
+    Editing,
     Playing,
 }
+
+const STARTING_STATE: AppState = AppState::Editing;
 
 // ── Resources ─────────────────────────────────────────────────────────────────
 
@@ -72,7 +75,7 @@ fn main() {
     App::new()
         .add_plugins(FrameTimeDiagnosticsPlugin::new(120))
         .add_plugins(PhysicsPlugins::default())
-        // .add_plugins(PhysicsDebugPlugin::default()) // Enables debug rendering
+        .add_plugins(PhysicsDebugPlugin::default()) // Enables debug rendering
         .insert_resource(Gravity(Vec2::ZERO)) // we apply custom N-body gravity manually
         .add_plugins(
             DefaultPlugins
