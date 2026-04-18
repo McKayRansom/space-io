@@ -274,31 +274,6 @@ pub fn draw_orbit(gizmos: &mut Gizmos, focus: Vec2, orbit: OrbitalParameters) {
     gizmos.linestrip(points, color);
 }
 
-pub fn debug_center_line(
-    cam_q: Query<&Transform, With<Camera2d>>,
-    proj_q: Query<&Projection, With<Camera2d>>,
-    mut gizmos: Gizmos,
-) {
-    let Ok(ctf) = cam_q.single() else { return };
-    let Ok(projection) = proj_q.single() else {
-        return;
-    };
-    let Projection::Orthographic(ref proj) = *projection else {
-        return;
-    };
-
-    // Half-height in world units
-    let half_h = proj.area.half_size().y;
-    let cx = ctf.translation.x;
-    let cy = ctf.translation.y;
-
-    gizmos.line_2d(
-        Vec2::new(cx, cy - half_h),
-        Vec2::new(cx, cy + half_h),
-        Color::srgba(1.0, 0.0, 1.0, 0.8),
-    );
-}
-
 pub fn update_trajectory(
     rocket_q: Query<
         (&Transform, &LinearVelocity, &Rocket, &ComputedCenterOfMass),
@@ -469,7 +444,7 @@ impl Plugin for HudPlugin {
         app.add_systems(Startup, hud_init);
         app.add_systems(
             Update,
-            (update_trajectory, update_hud, update_fps, debug_center_line)
+            (update_trajectory, update_hud, update_fps)
                 .run_if(in_state(AppState::Playing)),
         );
         app.add_systems(
