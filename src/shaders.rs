@@ -8,7 +8,7 @@ use bevy::{
 };
 use rand::Rng;
 
-use crate::terrain::{BodyTerrainParams, OrbitViewMesh, TerrainViewMesh};
+use crate::{MOON_RADIUS, PLANET_RADIUS, terrain::{BodyTerrainParams, OrbitViewMesh, TerrainViewMesh}};
 
 #[derive(Resource)]
 pub struct Materials {
@@ -298,8 +298,10 @@ struct TerrainMaterialUniform {
     colors: [Vec4; 6],
     base_radius_frac: f32,
     height_scale_frac: f32,
+    pixels: f32,
     _pad0: u32,
     _pad1: u32,
+    _pad2: u32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
@@ -337,8 +339,10 @@ fn terrain_planet_mat(
             ],
             base_radius_frac: 0.8,
             height_scale_frac: 0.2,
+            pixels: PLANET_RADIUS,
             _pad0: 0,
             _pad1: 0,
+            _pad2: 0,
         },
         heightmap,
     })
@@ -356,8 +360,10 @@ fn terrain_moon_mat(
             colors: [lit, lit, mid, mid, dark, dark],
             base_radius_frac: 0.8,
             height_scale_frac: 0.2,
+            pixels: MOON_RADIUS,
             _pad0: 0,
             _pad1: 0,
+            _pad2: 0,
         },
         heightmap,
     })
