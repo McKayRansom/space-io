@@ -1,7 +1,13 @@
-use avian2d::prelude::{ComputedCenterOfMass, LinearVelocity};
+use std::f32::consts::{PI, TAU};
+
+use avian2d::{
+    math::FRAC_PI_2,
+    prelude::{ComputedCenterOfMass, LinearVelocity},
+};
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
+    text::TextLayoutInfo,
 };
 
 use crate::{
@@ -17,15 +23,26 @@ pub enum HudLabel {
     Vel,
     Fuel,
     Status,
+    Nav,
+    NavVel,
 }
 #[derive(Component)]
 pub struct HudFps;
 
-pub fn hud_init(mut commands: Commands) {
+const NAV_SIZE: usize = 32;
+const NAV_FONT_WIDTH: f32 = 7.5;
+
+const BLUE: Color = Color::srgb(0.55, 0.8, 1.0);
+const GREEN: Color = Color::srgb(0.55, 1.0, 0.55);
+const YELLOW: Color = Color::srgb(1.0, 0.82, 0.4);
+const RED: Color = Color::srgb(1.0, 0.35, 0.35);
+
+pub fn hud_init(mut commands: Commands, asset_server: Res<AssetServer>) {
     // Camera – start centered on the rocket
     commands.spawn((Camera2d, Transform::from_xyz(0., PLANET_RADIUS, 0.)));
 
     let mono = TextFont {
+        font: asset_server.load("VT323-Regular.ttf"),
         font_size: 18.0,
         ..default()
     };
@@ -33,7 +50,7 @@ pub fn hud_init(mut commands: Commands) {
     commands.spawn((
         Text::new("ALT  --------"),
         mono.clone(),
-        TextColor(Color::srgb(0.55, 1.0, 0.55)),
+        TextColor(BLUE),
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(12.),
@@ -45,7 +62,7 @@ pub fn hud_init(mut commands: Commands) {
     commands.spawn((
         Text::new("VEL  --------"),
         mono.clone(),
-        TextColor(Color::srgb(0.55, 0.8, 1.0)),
+        TextColor(GREEN),
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(34.),
@@ -57,7 +74,7 @@ pub fn hud_init(mut commands: Commands) {
     commands.spawn((
         Text::new("FUEL --------"),
         mono.clone(),
-        TextColor(Color::srgb(1.0, 0.82, 0.4)),
+        TextColor(YELLOW),
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(56.),
@@ -73,7 +90,7 @@ pub fn hud_init(mut commands: Commands) {
             font_size: 20.0,
             ..default()
         },
-        TextColor(Color::srgb(1.0, 0.35, 0.35)),
+        TextColor(RED),
         Node {
             position_type: PositionType::Absolute,
             top: Val::Px(82.),
@@ -82,6 +99,55 @@ pub fn hud_init(mut commands: Commands) {
         },
         HudLabel::Status,
     ));
+    commands
+        .spawn(Node {
+            position_type: PositionType::Absolute,
+            bottom: Val::Px(30.),
+            left: Val::Percent(50.0),
+            right: Val::Percent(50.0),
+            justify_content: JustifyContent::Center,
+            ..default()
+        })
+        .with_children(|parent| {
+            parent.spawn((
+                Text::new(format!("[{}]", " ".repeat(NAV_SIZE))),
+                mono.clone(),
+                TextColor(Color::WHITE),
+                Node {
+                    position_type: PositionType::Absolute,
+                    ..default()
+                },
+            ));
+            parent.spawn((
+                Text::new("U"),
+                mono.clone(),
+                TextColor(Color::WHITE),
+                HudLabel::Nav,
+                Node {
+                    position_type: PositionType::Absolute,
+                    ..default()
+                },
+            ));
+            parent.spawn((
+                Text::new("+"),
+                mono.clone(),
+                TextColor(Color::WHITE),
+                Node {
+                    position_type: PositionType::Absolute,
+                    ..default()
+                },
+            ));
+            parent.spawn((
+                Text::new("o"),
+                mono.clone(),
+                TextColor(GREEN),
+                HudLabel::NavVel,
+                Node {
+                    position_type: PositionType::Absolute,
+                    ..default()
+                },
+            ));
+        });
     commands.spawn((
         Text::new("FPS --"),
         TextFont {
@@ -99,7 +165,7 @@ pub fn hud_init(mut commands: Commands) {
     ));
     // Controls hint (bottom-left)
     commands.spawn((
-        Text::new("A/D: rotate     W/↑: thrust     SPACE: stage     M: map     R: reset"),
+        Text::new("A/D: rotate  W/[UP]: thrust  [SPACE]: stage   M: map   R: reset"),
         TextFont {
             font_size: 13.0,
             ..default()
@@ -208,6 +274,31 @@ pub fn draw_orbit(gizmos: &mut Gizmos, focus: Vec2, orbit: OrbitalParameters) {
     gizmos.linestrip(points, color);
 }
 
+pub fn debug_center_line(
+    cam_q: Query<&Transform, With<Camera2d>>,
+    proj_q: Query<&Projection, With<Camera2d>>,
+    mut gizmos: Gizmos,
+) {
+    let Ok(ctf) = cam_q.single() else { return };
+    let Ok(projection) = proj_q.single() else {
+        return;
+    };
+    let Projection::Orthographic(ref proj) = *projection else {
+        return;
+    };
+
+    // Half-height in world units
+    let half_h = proj.area.half_size().y;
+    let cx = ctf.translation.x;
+    let cy = ctf.translation.y;
+
+    gizmos.line_2d(
+        Vec2::new(cx, cy - half_h),
+        Vec2::new(cx, cy + half_h),
+        Color::srgba(1.0, 0.0, 1.0, 0.8),
+    );
+}
+
 pub fn update_trajectory(
     rocket_q: Query<
         (&Transform, &LinearVelocity, &Rocket, &ComputedCenterOfMass),
@@ -291,17 +382,42 @@ pub fn follow_camera(
     proj.scale += (target_scale - proj.scale) * (6.0 * dt).min(1.0);
 }
 
+// calculates the margin in pixels of Nav-bar items given the angle in radians
+fn nav_calc_margin(angle: f32, pro: &'static str, retro: &'static str) -> (f32, &'static str) {
+    let (mark, rel_angle) = if angle.abs() < FRAC_PI_2 {
+        // we are pointing "UP"
+        (pro, -angle)
+    } else {
+        // we are pointing "DOWN"
+        (
+            retro,
+            if angle > FRAC_PI_2 {
+                -angle + PI
+            } else {
+                -angle - PI
+            },
+        )
+    };
+
+    let left_margin = ((rel_angle / PI) * NAV_SIZE as f32) * NAV_FONT_WIDTH;
+    (left_margin - NAV_FONT_WIDTH / 2.0, mark)
+}
+
 pub fn update_hud(
     rocket_q: Query<(&Transform, &LinearVelocity, &Rocket), With<PlayerRocket>>,
-    mut hud_q: Query<(&HudLabel, &mut Text)>,
+    planet_q: Query<(&Transform, &LinearVelocity), With<CelestialBody>>,
+    mut hud_q: Query<(&HudLabel, &mut Text, &mut Node, Option<&TextLayoutInfo>)>,
 ) {
     let Ok((tf, velocity, rocket)) = rocket_q.single() else {
+        return;
+    };
+    let Ok((body_tf, body_vel)) = planet_q.get(rocket.soi_body.unwrap()) else {
         return;
     };
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);
     let speed = velocity.length();
 
-    for (label, mut text) in &mut hud_q {
+    for (label, mut text, mut node, layout_info) in &mut hud_q {
         *text = Text::new(match label {
             HudLabel::Alt => format!("ALT  {:>8.0} m", alt),
             HudLabel::Vel => format!("VEL  {:>8.1} m/s", speed),
@@ -323,6 +439,23 @@ pub fn update_hud(
                     String::new()
                 }
             }
+            HudLabel::Nav => {
+                let radial = (tf.translation.truncate() - body_tf.translation.truncate())
+                    .normalize_or_zero();
+                let nose = (tf.rotation * Vec3::Y).truncate();
+                let angle = -radial.angle_to(nose);
+                let (margin, mark) = nav_calc_margin(angle, "U", "D");
+                node.left = Val::Px(margin);
+                mark.to_string()
+            }
+            HudLabel::NavVel => {
+                let nose = (tf.rotation * Vec3::Y).truncate();
+                let rel_vel = velocity.0 - body_vel.0;
+                let angle = -rel_vel.angle_to(nose);
+                let (margin, mark) = nav_calc_margin(angle, "o", "x");
+                node.left = Val::Px(margin);
+                mark.to_string()
+            }
         });
     }
 }
@@ -336,7 +469,8 @@ impl Plugin for HudPlugin {
         app.add_systems(Startup, hud_init);
         app.add_systems(
             Update,
-            (update_trajectory, update_hud, update_fps).run_if(in_state(AppState::Playing)),
+            (update_trajectory, update_hud, update_fps, debug_center_line)
+                .run_if(in_state(AppState::Playing)),
         );
         app.add_systems(
             FixedUpdate,
