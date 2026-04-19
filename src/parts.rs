@@ -50,6 +50,7 @@ impl PartDef {
                     layout: spritesheet.layout.clone(),
                     index: self.anim.unwrap().0,
                 }),
+                color: Color::NONE, // Start animation "off" or hidden
                 ..Default::default()
             },
             AnimationIndices {

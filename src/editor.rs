@@ -113,7 +113,6 @@ impl Command for LaunchRocketCommand {
 // Spawn / despawn the editor panel. Rebuilds only when the stage layout changes.
 // TODO: Why does this go away when we don't spawn HUD...
 pub fn build_editor_ui(mut commands: Commands, parts: Res<PartsCatalog>) {
-    println!("FOJFIOEJIS");
     // spawn default rocket (for now)
     commands.queue(SpawnRocketCommand {
         transform: Transform::default(),
@@ -357,6 +356,66 @@ pub fn handle_editor_input(
     }
 }
 
+fn cursor_world_pos(
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+) -> Option<Vec2> {
+    let (camera, cam_gtf) = camera_q.single().ok()?;
+    let window = windows.single().ok()?;
+    let screen_pos = window.cursor_position()?;          // pixels from top-left
+    camera.viewport_to_world_2d(cam_gtf, screen_pos).ok()
+}
+
+#[derive(Resource, Default)]
+struct MouseOverEntity {
+    pub id: Option<Entity>,
+    // build: 
+}
+
+const SELECTED_COLOR: Color = Color::srgba(0.0, 1.0, 0.0, 0.6);
+
+fn handle_mouse_position(
+    spatial_query: SpatialQuery,
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    mut sprite_q: Query<&mut Sprite>,
+    mut mouse_over: ResMut<MouseOverEntity>,
+    mouse: Res<ButtonInput<MouseButton>>,
+) {
+    if let Some(entity) = mouse_over.id {
+        if let Ok(mut sprite) = sprite_q.get_mut(entity) {
+            sprite.color = Color::WHITE;
+        }
+    }
+
+    let Some(world_pos) = cursor_world_pos(windows, camera_q) else {
+        return; // cursor is outside the window
+    };
+    // world_pos is in the same coordinate space as Transform translations
+
+    let intersections = spatial_query.shape_intersections(
+        &Collider::circle(0.5),         // Shape
+        world_pos,                     // Shape position
+        0.0,                            // Shape rotation
+        &SpatialQueryFilter::default(), // Query filter
+    );
+
+    let Some(entity) = intersections.first() else {
+        return;
+    };
+
+    let Ok(mut sprite) = sprite_q.get_mut(*entity) else {
+        return;
+    };
+
+    if mouse.just_pressed(MouseButton::Left) {
+        // do stuff
+    }
+
+    sprite.color = SELECTED_COLOR;
+    mouse_over.id = Some(*entity);
+}
+
 // ── Plugin ────────────────────────────────────────────────────────────────────
 
 pub struct EditorPlugin;
@@ -364,11 +423,12 @@ pub struct EditorPlugin;
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TextInputState>();
+        app.init_resource::<MouseOverEntity>();
         app.add_systems(OnEnter(AppState::Editing), build_editor_ui);
         app.add_systems(OnExit(AppState::Editing), remove_editor_ui);
         app.add_systems(
             Update,
-            (handle_editor_input,).run_if(in_state(AppState::Editing)),
+            (handle_editor_input, handle_mouse_position).run_if(in_state(AppState::Editing)),
         );
     }
 }

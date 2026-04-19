@@ -355,9 +355,9 @@ pub fn physics_step(
             if body.mass < lowest_mass {
                 lowest_mass = body.mass;
                 rocket.soi_body = Some(entity);
-                if entity != soi_ent {
-                    log::info!("SOI Changed. Body: {} mass: {}", soi_ent, body.mass);
-                }
+                // if entity != soi_ent {
+                //     log::info!("SOI Changed. Body: {} mass: {}", soi_ent, body.mass);
+                // }
             }
 
             forces.apply_linear_acceleration((to_body / dist) * (G * body.mass / dist_sq));
