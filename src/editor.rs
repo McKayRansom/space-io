@@ -1,9 +1,10 @@
 #![allow(unused)]
 
 use crate::*;
+use avian2d::math::Dir;
 use bevy::input::keyboard::{Key, KeyboardInput};
 use bevy::input::ButtonState;
-use bevy::prelude::*;
+use bevy::{log, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::{fs, path::PathBuf};
 
@@ -275,6 +276,21 @@ pub fn remove_editor_ui(mut commands: Commands, editor_root: Query<Entity, With<
     }
 }
 
+struct SpawnRocketPart {
+    id: String,
+}
+
+impl Command for SpawnRocketPart {
+    fn apply(self, world: &mut World) -> () {
+        if let MouseOverState::Selected(old_entity) = world.resource::<MouseOverState>() {
+            world.despawn(*old_entity);
+        }
+        let id = spawn_rocket_part(world, self.id.clone(), Vec2::ZERO);
+        world.entity_mut(id).insert(ColliderDisabled);
+        world.insert_resource(MouseOverState::Selected(id));
+    }
+}
+
 pub fn handle_editor_input(
     mut commands: Commands,
     mut rocket_q: Query<(Entity, &mut Rocket), With<PlayerRocket>>,
@@ -298,9 +314,8 @@ pub fn handle_editor_input(
         // Stage buttons — left click = add part
         for (interaction, part_btn) in &stage_buttons {
             if *interaction == Interaction::Pressed {
-                commands.queue(RocketBuildCommand {
-                    rocket: rocket_entity,
-                    part_id: part_btn.0.id.clone(),
+                commands.queue(SpawnRocketPart {
+                    id: part_btn.0.id.clone(),
                 });
             }
         }
@@ -362,58 +377,213 @@ fn cursor_world_pos(
 ) -> Option<Vec2> {
     let (camera, cam_gtf) = camera_q.single().ok()?;
     let window = windows.single().ok()?;
-    let screen_pos = window.cursor_position()?;          // pixels from top-left
+    let screen_pos = window.cursor_position()?; // pixels from top-left
     camera.viewport_to_world_2d(cam_gtf, screen_pos).ok()
 }
 
-#[derive(Resource, Default)]
-struct MouseOverEntity {
-    pub id: Option<Entity>,
-    // build: 
+// fn disable_colliders
+
+struct SelectPart {
+    pub id: Entity,
 }
 
-const SELECTED_COLOR: Color = Color::srgba(0.0, 1.0, 0.0, 0.6);
+impl Command for SelectPart {
+    fn apply(self, world: &mut World) -> () {
+        let Some(parent) = world.get::<ChildOf>(self.id).map(|child_of| child_of.parent()) else {
+            log::warn!("No parent for part {}", self.id);
+            return;
+        };
+        let mut orphan_rocket = None;
+        if let Some(_rocket) = world.get::<Rocket>(parent) {
+            // this is already the "root" of a rocket, we can just move this
+            if let Some(_player_rocket) = world.get::<PlayerRocket>(parent) {
+                log::info!("NOT ALLOWED TO MOVE PLAYER ROCKET");
+                return;
+            }
+            log::debug!("Moving whole rocket");
+            world.entity_mut(parent).remove::<Children>();
+            orphan_rocket = Some(parent);
+        } 
 
-fn handle_mouse_position(
+        // this part is somewhere else on the rocket, unparent this part
+        log::debug!("splitting rocket at {}", self.id);
+        world.entity_mut(self.id).remove::<ChildOf>();
+
+        // disable colliders, or we're going to have a MAJOR problem
+        for entity in rocket_all_parts(world, self.id) {
+            world.entity_mut(entity).insert(ColliderDisabled);
+        }
+
+        world.insert_resource(MouseOverState::Selected(self.id));
+
+        // TODO: this doesn't work, it just despawns the part too even though we removed it as a child, ColliderOf reasons maybe?
+        // if let Some(e) = orphan_rocket {
+        //     world.despawn(e);
+        // }
+    }
+}
+
+struct DeselectPart {
+    pub parent: Option<Entity>,
+    pub id: Entity,
+}
+
+impl Command for DeselectPart {
+    fn apply(self, world: &mut World) -> () {
+        if let Some(parent) = self.parent {
+            log::debug!("Deslect reparenting {} to {}", self.id, parent);
+            assert_ne!(parent, self.id);
+            // fix the transform
+            let parent_transform = world.get::<GlobalTransform>(parent).unwrap();
+            let child_transform = world.get::<GlobalTransform>(self.id).unwrap();
+            let new_transform = child_transform.reparented_to(parent_transform);
+            // we are placing it on a parent
+            world.entity_mut(parent).add_child(self.id);
+            world.entity_mut(self.id).insert(new_transform);
+        } else {
+            // guess we have to spawn a new rocket :(
+            let mut transform = world.get_mut::<Transform>(self.id).unwrap();
+            let new_tf = transform.clone();
+            *transform = Transform::default();
+            let new_rocket = spawn_non_player_rocket(world, new_tf, self.id);
+            log::warn!("Deselect spawn new rocket {}", new_rocket);
+        }
+
+        // enable colliders, or we're going to have a problem
+        for entity in rocket_all_parts(world, self.id) {
+            world.entity_mut(entity).remove::<ColliderDisabled>();
+            log::debug!("Enabling collider for {}", entity);
+        }
+    }
+}
+
+#[derive(Resource, Default)]
+enum MouseOverState {
+    #[default]
+    Nothing,
+    Hovering(Entity),
+    Selected(Entity),
+}
+
+const HOVERED_COLOR: Color = Color::srgba(0.0, 1.0, 0.0, 0.6);
+
+// Runs when Nothing or Hovering: find what's under the cursor and update highlight.
+fn system_hover(
+    mut commands: Commands,
     spatial_query: SpatialQuery,
     windows: Query<&Window>,
     camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
-    mut sprite_q: Query<&mut Sprite>,
-    mut mouse_over: ResMut<MouseOverEntity>,
+    mut part_q: Query<&mut Sprite>,
+    mut mouse_over: ResMut<MouseOverState>,
     mouse: Res<ButtonInput<MouseButton>>,
 ) {
-    if let Some(entity) = mouse_over.id {
-        if let Ok(mut sprite) = sprite_q.get_mut(entity) {
+    // Clear the previous highlight.
+    if let MouseOverState::Hovering(old) = *mouse_over {
+        if let Ok(mut sprite) = part_q.get_mut(old) {
             sprite.color = Color::WHITE;
         }
     }
 
     let Some(world_pos) = cursor_world_pos(windows, camera_q) else {
-        return; // cursor is outside the window
-    };
-    // world_pos is in the same coordinate space as Transform translations
-
-    let intersections = spatial_query.shape_intersections(
-        &Collider::circle(0.5),         // Shape
-        world_pos,                     // Shape position
-        0.0,                            // Shape rotation
-        &SpatialQueryFilter::default(), // Query filter
-    );
-
-    let Some(entity) = intersections.first() else {
+        *mouse_over = MouseOverState::Nothing;
         return;
     };
 
-    let Ok(mut sprite) = sprite_q.get_mut(*entity) else {
+    let hits = spatial_query.shape_intersections(
+        &Collider::circle(0.5),
+        world_pos,
+        0.0,
+        &SpatialQueryFilter::default(),
+    );
+
+    let Some(&entity) = hits.first() else {
+        *mouse_over = MouseOverState::Nothing;
         return;
     };
 
     if mouse.just_pressed(MouseButton::Left) {
-        // do stuff
+        log::debug!("Selecting entity {}", entity);
+        commands.queue(SelectPart { id: entity });
+        // NOTE: We cannot change the MouseOverState here for DEEPLY CURSED REASONS, the command will not be processed until after the system below runs and terrible things happen!
+    } else {
+        if let Ok(mut sprite) = part_q.get_mut(entity) {
+            sprite.color = HOVERED_COLOR;
+        }
+        *mouse_over = MouseOverState::Hovering(entity);
+    }
+}
+
+// Runs when Selected: move the part with the cursor and snap it on click.
+fn system_drag(
+    mut commands: Commands,
+    spatial_query: SpatialQuery,
+    windows: Query<&Window>,
+    camera_q: Query<(&Camera, &GlobalTransform), With<Camera2d>>,
+    mut part_q: Query<(&mut Sprite, &mut Transform, &Collider)>,
+    mut mouse_over: ResMut<MouseOverState>,
+    mouse: Res<ButtonInput<MouseButton>>,
+    global_tf: Query<&GlobalTransform>,
+) {
+    let MouseOverState::Selected(entity) = *mouse_over else {
+        return;
+    };
+
+    let Ok((mut sprite, mut tf, collider)) = part_q.get_mut(entity) else {
+        return;
+    };
+
+    let Some(world_pos) = cursor_world_pos(windows, camera_q) else {
+        return;
+    };
+    let world_pos = world_pos.round();
+
+    let hits = spatial_query.shape_intersections(
+        collider,
+        world_pos,
+        0.0,
+        &SpatialQueryFilter::default(),
+    );
+
+    let mut new_part_pos = world_pos;
+    let mut new_part_parent: Option<Entity> = None;
+
+    if let Some(&hit_entity) = hits.first() {
+        // Cursor is inside another part — find the nearest free adjacent position.
+        // NOTE: Dir::new() can fail on a zero vector.
+        let parent_tf = global_tf.get(hit_entity).unwrap();
+        if let Ok(dir) = Dir::new(parent_tf.translation().truncate() - world_pos) {
+            let start_pos = parent_tf.translation().truncate() - dir * 50.0;
+            if let Some(first_hit) = spatial_query.cast_shape(
+                collider,
+                start_pos,
+                0.0,
+                dir,
+                &ShapeCastConfig::from_max_distance(100.0),
+                &SpatialQueryFilter::default(),
+            ) {
+                new_part_pos = (start_pos + (dir * first_hit.distance)).round();
+                new_part_parent = Some(first_hit.entity);
+                if first_hit.entity == entity {
+                    log::warn!("Collided with selected entity, there must be a problem!");
+                    return;
+                }
+            } else {
+                println!("Dir {} Warning: no collision found :(", dir);
+            }
+        }
     }
 
-    sprite.color = SELECTED_COLOR;
-    mouse_over.id = Some(*entity);
+    tf.translation = new_part_pos.extend(0.0);
+
+    if mouse.just_pressed(MouseButton::Left) {
+        log::debug!("Deselecting entity {}", entity);
+        commands.queue(DeselectPart {
+            id: entity,
+            parent: new_part_parent,
+        });
+        sprite.color = Color::WHITE;
+        *mouse_over = MouseOverState::Nothing;
+    }
 }
 
 // ── Plugin ────────────────────────────────────────────────────────────────────
@@ -423,12 +593,21 @@ pub struct EditorPlugin;
 impl Plugin for EditorPlugin {
     fn build(&self, app: &mut App) {
         app.init_resource::<TextInputState>();
-        app.init_resource::<MouseOverEntity>();
+        app.init_resource::<MouseOverState>();
         app.add_systems(OnEnter(AppState::Editing), build_editor_ui);
         app.add_systems(OnExit(AppState::Editing), remove_editor_ui);
         app.add_systems(
             Update,
-            (handle_editor_input, handle_mouse_position).run_if(in_state(AppState::Editing)),
+            (
+                handle_editor_input,
+                system_hover.run_if(|s: Res<MouseOverState>| {
+                    !matches!(*s, MouseOverState::Selected(_))
+                }),
+                system_drag.run_if(|s: Res<MouseOverState>| {
+                    matches!(*s, MouseOverState::Selected(_))
+                }),
+            )
+                .run_if(in_state(AppState::Editing)),
         );
     }
 }

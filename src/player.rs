@@ -9,7 +9,7 @@ impl Command for SeparateStage {
         let (lin_vel, tail) = {
             let mut q = world.query::<(&LinearVelocity, &Rocket)>();
             let (lv, r) = q.get(world, self.0).unwrap();
-            (*lv, r.tail)
+            (*lv, todo!()/*r.tail*/)
         };
 
         let Some(tail_entity) = tail else { return };
@@ -32,7 +32,7 @@ impl Command for SeparateStage {
                 let new_rocket = world.spawn((
                     Visibility::default(),
                     world_tf,
-                    Rocket { tail: Some(tail_entity), soi_body, ..Default::default() },
+                    Rocket {/*  tail: Some(tail_entity),*/ soi_body, ..Default::default() },
                     RigidBody::Dynamic,
                     LinearVelocity(sep_vel),
                     RigidBodyColliders::default(), // pre-seed so on_insert hooks push synchronously
@@ -56,7 +56,7 @@ impl Command for SeparateStage {
                     fix_collider_entity = ent_mut.get::<ChildOf>().unwrap().0;
                 }
 
-                world.get_mut::<Rocket>(self.0).unwrap().tail = Some(parent);
+                // world.get_mut::<Rocket>(self.0).unwrap().tail = Some(parent);
                 world.entity_mut(self.0).insert(RecomputeMassProperties);
                 world.entity_mut(new_rocket).insert(RecomputeMassProperties);
                 println!("Parent Rocket colliders: {:?}", world.get::<RigidBodyColliders>(self.0).unwrap());
@@ -111,8 +111,10 @@ pub fn handle_input(
     }
 
     // Stage separation — find next decoupler and split the rocket there
-    if keys.just_pressed(KeyCode::Space) && rocket.tail.is_some() {
-        commands.queue(SeparateStage(rocket_entity));
+    // TODO!!!!
+    if keys.just_pressed(KeyCode::Space) /* && rocket.tail.is_some() */{
+        todo!();
+        // commands.queue(SeparateStage(rocket_entity));
         return;
     }
 

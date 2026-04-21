@@ -2,7 +2,9 @@ use avian2d::prelude::*;
 use bevy::{log, prelude::*};
 
 use crate::{
-    AppState, BREAK_FORCE, G, LANDING_FORCE, PLANET_RADIUS, ROT_FORCE, body::{CelestialBody, PlanetEntity, setup_bodies}, parts::{PartKind, PartsCatalog, SpritesheetInfo}
+    body::{setup_bodies, CelestialBody, PlanetEntity},
+    parts::{PartKind, PartsCatalog, SpritesheetInfo},
+    AppState, BREAK_FORCE, G, LANDING_FORCE, PLANET_RADIUS, ROT_FORCE,
 };
 
 use serde::{Deserialize, Serialize};
@@ -19,7 +21,7 @@ pub struct Rocket {
     pub disabled_part: Option<Entity>,
     pub body_offset: Option<Vec3>, // surface-normal offset from that body's center
     pub soi_body: Option<Entity>,  // which body we're in the SOI of
-    pub tail: Option<Entity>,
+    // pub tail: Option<Entity>,
 
     // cached-each-frame
     pub stage_thrust: f32,
@@ -80,98 +82,91 @@ pub struct PartId(pub String);
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RocketSave {
     pub name: String,
-    pub parts: Vec<String>,
+    pub parts: Vec<RocketSavePart>,
+}
+
+#[derive(Serialize, Deserialize, Clone)]
+pub struct RocketSavePart {
+    pub id: String,
+    pub tf: Vec2,
+    pub pt: usize,
 }
 
 // the player's current rocketsave
 #[derive(Resource)]
 pub struct PlayerRocketSave(pub RocketSave);
 
-pub struct RocketBuildCommand {
-    pub rocket: Entity,
-    pub part_id: String,
-}
+pub fn spawn_rocket_part(world: &mut World, id: String, transform: Vec2) -> Entity {
+    let catalog = world.get_resource::<PartsCatalog>().unwrap();
+    let part_def = catalog.find(&id).unwrap().clone();
+    let sprite = part_def.sprite(world.get_resource::<SpritesheetInfo>().unwrap());
 
-impl Command for RocketBuildCommand {
-    fn apply(self, world: &mut World) {
-        let catalog = world.get_resource::<PartsCatalog>().unwrap();
-        let part_def = catalog.find(&self.part_id).unwrap().clone();
-        let sprite = part_def.sprite(world.get_resource::<SpritesheetInfo>().unwrap());
+    let part = match part_def.kind {
+        PartKind::CommandPod => RocketPart::CommandPod,
+        PartKind::Decoupler => RocketPart::Decoupler,
+        PartKind::FuelTank { capacity } => RocketPart::FuelTank(FuelTank {
+            fuel: capacity,
+            capacity,
+        }),
+        PartKind::Engine { thrust, fuel_rate } => RocketPart::Engine(Engine {
+            thrust,
+            fuel_rate,
+            active: false,
+        }),
+    };
 
-        // TEMP: Assume Tail or Rocket is parent, eventually we will want to specify
-        let rocket = world.get::<Rocket>(self.rocket).unwrap();
-        let parent = rocket.tail.unwrap_or(self.rocket);
+    let exhaust = part_def.anim.map(|_anim| {
+        let (sprite, anim_indices, anim_timer) =
+            part_def.build_anim(world.get_resource::<SpritesheetInfo>().unwrap());
+        world
+            .spawn((
+                Exhaust,
+                Transform::from_xyz(
+                    0.0,
+                    -part_def.size.1 / 2.0 - 8.0, /* sprite size compensation */
+                    0.0,
+                ),
+                sprite,
+                anim_indices,
+                anim_timer,
+            ))
+            .id()
+    });
 
-        let transform = if let Some(tail) = rocket.tail {
-            let parent_collider = world.get::<Collider>(tail).unwrap();
-            let extents = parent_collider.shape().as_cuboid().unwrap().half_extents;
-            Transform::from_xyz(0.0, -extents.y - part_def.size.1 / 2.0, 0.0)
-        } else {
-            Transform::default()
-        };
-
-        let part = match part_def.kind {
-            PartKind::CommandPod => RocketPart::CommandPod,
-            PartKind::Decoupler => RocketPart::Decoupler,
-            PartKind::FuelTank { capacity } => RocketPart::FuelTank(FuelTank {
-                fuel: capacity,
-                capacity,
-            }),
-            PartKind::Engine { thrust, fuel_rate } => RocketPart::Engine(Engine {
-                thrust,
-                fuel_rate,
-                active: false,
-            }),
-        };
-
-        let collide = Collider::rectangle(part_def.size.0, part_def.size.1);
-
-        let exhaust = part_def.anim.map(|_anim| {
-            let (sprite, anim_indices, anim_timer) =
-                part_def.build_anim(world.get_resource::<SpritesheetInfo>().unwrap());
-            world
-                .spawn((
-                    Exhaust,
-                    Transform::from_xyz(
-                        0.0,
-                        -part_def.size.1 / 2.0 - 8.0, /* sprite size compensation */
-                        0.0,
-                    ),
-                    sprite,
-                    anim_indices,
-                    anim_timer,
-                ))
-                .id()
-        });
-
-        let mut entity = world.spawn((
-            sprite,
-            transform,
-            part,
-            collide,
-            Mass(part_def.mass),
-            PartId(self.part_id.clone()),
-        ));
-        if let Some(exhaust) = exhaust {
-            entity.add_child(exhaust);
-        }
-
-        let id = entity.id();
-        let mut parent = world.get_entity_mut(parent).unwrap();
-        parent.add_child(id);
-
-        let mut rocket = world.get_mut::<Rocket>(self.rocket).unwrap();
-        // assume we're new tail for now
-        rocket.tail = Some(id);
-
-        // println!("Spawned rocket part: {}", self.part_id);
+    let mut entity = world.spawn((
+        sprite,
+        Transform::from_translation(transform.extend(0.0)),
+        part,
+        Collider::rectangle(part_def.size.0, part_def.size.1),
+        Mass(part_def.mass),
+        PartId(id),
+    ));
+    if let Some(exhaust) = exhaust {
+        entity.add_child(exhaust);
     }
+
+    entity.id()
 }
 
 pub struct SpawnRocketCommand {
     pub transform: Transform,
     pub rocket_save: RocketSave,
     pub planet: Option<Entity>,
+}
+
+pub fn spawn_non_player_rocket(world: &mut World, transform: Transform, child: Entity) -> Entity {
+    let state = world.resource::<State<AppState>>().get().clone();
+
+    world
+        .spawn((
+            transform,
+            Visibility::default(),
+            Rocket::default(),
+            RigidBody::Dynamic,
+            DespawnOnExit(state),
+        ))
+        .add_child(child)
+        .id()
 }
 
 impl Command for SpawnRocketCommand {
@@ -196,40 +191,76 @@ impl Command for SpawnRocketCommand {
             ))
             .id();
 
-        for part_id in &self.rocket_save.parts {
-            RocketBuildCommand {
-                rocket,
-                part_id: part_id.clone(),
+        let mut entity_lookup: Vec<Entity> = Vec::new();
+        for (i, part) in self.rocket_save.parts.iter().enumerate() {
+            let id = spawn_rocket_part(world, part.id.clone(), part.tf);
+            if i > 0 {
+                if let Some(parent_id) = entity_lookup.get(part.pt) {
+                    world.entity_mut(*parent_id).add_child(id);
+                } else {
+                    log::warn!(
+                        "Unable to find proper parent for part {}, wanted parent {}",
+                        part.id,
+                        part.pt
+                    );
+                }
+            } else {
+                world.entity_mut(rocket).add_child(id);
             }
-            .apply(world);
+            entity_lookup.push(id);
         }
     }
 }
 
-pub fn save_rocket(world: &mut World, rocket_entity: Entity) -> RocketSave {
-    let rocket = world.get::<Rocket>(rocket_entity).unwrap();
-    let Some(tail) = rocket.tail else {
-        warn!("SaveRocketCommand: rocket has no parts");
-        return RocketSave { name: "empty".into(), parts: Vec::new()};
-    };
+pub fn rocket_all_parts(world: &mut World, rocket: Entity) -> Vec<Entity> {
+    let mut queue: Vec<Entity> = vec![rocket];
+    let mut parts: Vec<Entity> = Vec::new();
+    let mut child_q = world.query::<&Children>();
+    let mut part_q = world.query::<&RocketPart>();
 
-    // Walk chain from tail → head, collecting part IDs
-    let mut parts: Vec<String> = Vec::new();
-    let mut current = tail;
-    loop {
-        if let Some(part_id) = world.get::<PartId>(current) {
-            parts.push(part_id.0.clone());
+    while let Some(entity) = queue.pop() {
+        println!("Parsing entity: {}", entity);
+        if let Ok(children) = child_q.get(world, entity) {
+            for child in children {
+                println!("need to check child: {}", child);
+                queue.push(*child);
+            }
         }
-        let Some(child_of) = world.get::<ChildOf>(current) else {
-            break;
-        };
-        let parent = child_of.parent();
-        if parent == rocket_entity {
-            break;
+        // skip the rocket entity itself, or any exhausts
+        if part_q.get(world, entity).is_ok() {
+            println!("Found rocket part {}", entity);
+            parts.push(entity);
         }
-        current = parent;
     }
-    parts.reverse(); // now top → bottom (same order as build commands)
+
+    parts
+}
+
+pub fn save_rocket(world: &mut World, rocket_entity: Entity) -> RocketSave {
+    // let rocket = world.get::<Rocket>(rocket_entity).unwrap();
+    // let Some(tail) = rocket.tail else {
+    //     warn!("SaveRocketCommand: rocket has no parts");
+    //     return RocketSave { name: "empty".into(), parts: Vec::new()};
+    // };
+
+    let mut parts: Vec<RocketSavePart> = Vec::new();
+    let mut entity_lookup: Vec<Entity> = Vec::new();
+
+    let mut part_q = world.query::<(&PartId, &Transform, &ChildOf)>();
+
+    for current in rocket_all_parts(world, rocket_entity) {
+        if let Ok((id, tf, child_of)) = part_q.get(world, current) {
+            parts.push(RocketSavePart {
+                id: id.0.clone(),
+                tf: tf.translation.truncate(),
+                pt: entity_lookup
+                    .iter()
+                    .position(|elem| elem == &child_of.0)
+                    .unwrap_or(0),
+            });
+            entity_lookup.push(current);
+        }
+    }
 
     RocketSave {
         name: "Unnamed - TODO".into(),
@@ -241,15 +272,19 @@ pub fn default_rocket() -> RocketSave {
     RocketSave {
         name: "Default Rocket".into(),
         parts: [
-            "command_pod_mk1".into(),
-            "decoupler_mk1".into(),
-            "fuel_tank_mk1".into(),
-            "engine_mk1".into(),
-            "decoupler_mk1".into(),
-            "fuel_tank_mk1".into(),
-            "fuel_tank_mk1".into(),
-            "engine_mk1".into(),
-            "engine_mk1".into(),
+            RocketSavePart {
+                id: "command_pod_mk1".into(),
+                tf: Vec2::default(),
+                pt: 0,
+            },
+            // "decoupler_mk1".into(),
+            // "fuel_tank_mk1".into(),
+            // "engine_mk1".into(),
+            // "decoupler_mk1".into(),
+            // "fuel_tank_mk1".into(),
+            // "fuel_tank_mk1".into(),
+            // "engine_mk1".into(),
+            // "engine_mk1".into(),
         ]
         .to_vec(),
     }
@@ -382,7 +417,7 @@ pub fn physics_step(
         // if rocket.throttle > 0.0 || rocket.stage_active {
         let mut force: Vec2 = Vec2::ZERO;
 
-        if let Some(tail) = rocket.tail {
+        if let Some(tail) = todo!() {
             let mut child = tail;
             let mut new_stage_fuel = 0.0;
             let mut new_stage_thrust = 0.0;
@@ -514,7 +549,7 @@ impl Command for Takeoff {
 /// a rocket's circle collider overlaps it. We decide land vs crash here.
 pub fn collision_handler(
     mut rocket_q: Query<&mut Rocket, Without<CelestialBody>>,
-    body_q: Query<&CelestialBody>,
+    _body_q: Query<&CelestialBody>,
     mut commands: Commands,
     collisions: Collisions,
     part_q: Query<&ChildOf, (With<RocketPart>, Without<Rocket>)>,
@@ -587,11 +622,11 @@ pub fn collision_handler(
             continue;
         }
 
-        if rocket.tail.is_some_and(|tail| tail == part_entity) {
-            // we gotta move it
+        // if rocket.tail.is_some_and(|tail| tail == part_entity) {
+        // we gotta move it
 
-            rocket.tail = Some(parent);
-        }
+        //     rocket.tail = Some(parent);
+        // }
         // TODO: create new rocket with our children if needed
         commands.entity(part_entity).despawn();
         // }

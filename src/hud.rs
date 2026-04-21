@@ -1,4 +1,4 @@
-use std::f32::consts::{PI, TAU};
+use std::f32::consts::PI;
 
 use avian2d::{
     math::FRAC_PI_2,
