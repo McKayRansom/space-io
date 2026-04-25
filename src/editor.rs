@@ -389,7 +389,10 @@ struct SelectPart {
 
 impl Command for SelectPart {
     fn apply(self, world: &mut World) -> () {
-        let Some(parent) = world.get::<ChildOf>(self.id).map(|child_of| child_of.parent()) else {
+        let Some(parent) = world
+            .get::<ChildOf>(self.id)
+            .map(|child_of| child_of.parent())
+        else {
             log::warn!("No parent for part {}", self.id);
             return;
         };
@@ -403,14 +406,14 @@ impl Command for SelectPart {
             log::debug!("Moving whole rocket");
             world.entity_mut(parent).remove::<Children>();
             orphan_rocket = Some(parent);
-        } 
+        }
 
         // this part is somewhere else on the rocket, unparent this part
         log::debug!("splitting rocket at {}", self.id);
         world.entity_mut(self.id).remove::<ChildOf>();
 
         // disable colliders, or we're going to have a MAJOR problem
-        for entity in rocket_all_parts(world, self.id) {
+        for entity in rocket_all_parts_world(world, self.id) {
             world.entity_mut(entity).insert(ColliderDisabled);
         }
 
@@ -445,12 +448,18 @@ impl Command for DeselectPart {
             let mut transform = world.get_mut::<Transform>(self.id).unwrap();
             let new_tf = transform.clone();
             *transform = Transform::default();
-            let new_rocket = spawn_non_player_rocket(world, new_tf, self.id);
+            let new_rocket = spawn_non_player_rocket(
+                world,
+                new_tf,
+                self.id,
+                Rocket::default(),
+                LinearVelocity(Vec2::ZERO),
+            );
             log::warn!("Deselect spawn new rocket {}", new_rocket);
         }
 
         // enable colliders, or we're going to have a problem
-        for entity in rocket_all_parts(world, self.id) {
+        for entity in rocket_all_parts_world(world, self.id) {
             world.entity_mut(entity).remove::<ColliderDisabled>();
             log::debug!("Enabling collider for {}", entity);
         }
@@ -537,12 +546,8 @@ fn system_drag(
     };
     let world_pos = world_pos.round();
 
-    let hits = spatial_query.shape_intersections(
-        collider,
-        world_pos,
-        0.0,
-        &SpatialQueryFilter::default(),
-    );
+    let hits =
+        spatial_query.shape_intersections(collider, world_pos, 0.0, &SpatialQueryFilter::default());
 
     let mut new_part_pos = world_pos;
     let mut new_part_parent: Option<Entity> = None;
@@ -600,12 +605,10 @@ impl Plugin for EditorPlugin {
             Update,
             (
                 handle_editor_input,
-                system_hover.run_if(|s: Res<MouseOverState>| {
-                    !matches!(*s, MouseOverState::Selected(_))
-                }),
-                system_drag.run_if(|s: Res<MouseOverState>| {
-                    matches!(*s, MouseOverState::Selected(_))
-                }),
+                system_hover
+                    .run_if(|s: Res<MouseOverState>| !matches!(*s, MouseOverState::Selected(_))),
+                system_drag
+                    .run_if(|s: Res<MouseOverState>| matches!(*s, MouseOverState::Selected(_))),
             )
                 .run_if(in_state(AppState::Editing)),
         );

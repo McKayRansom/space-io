@@ -154,16 +154,17 @@ pub struct SpawnRocketCommand {
     pub planet: Option<Entity>,
 }
 
-pub fn spawn_non_player_rocket(world: &mut World, transform: Transform, child: Entity) -> Entity {
+pub fn spawn_non_player_rocket(world: &mut World, transform: Transform, child: Entity, rocket: Rocket, velocity: LinearVelocity) -> Entity {
     let state = world.resource::<State<AppState>>().get().clone();
 
     world
         .spawn((
             transform,
             Visibility::default(),
-            Rocket::default(),
+            rocket,
             RigidBody::Dynamic,
             DespawnOnExit(state),
+            velocity,
         ))
         .add_child(child)
         .id()
@@ -212,22 +213,29 @@ impl Command for SpawnRocketCommand {
     }
 }
 
-pub fn rocket_all_parts(world: &mut World, rocket: Entity) -> Vec<Entity> {
-    let mut queue: Vec<Entity> = vec![rocket];
-    let mut parts: Vec<Entity> = Vec::new();
+pub fn rocket_all_parts_world(world: &mut World, rocket: Entity) -> Vec<Entity> {
     let mut child_q = world.query::<&Children>();
     let mut part_q = world.query::<&RocketPart>();
 
+    rocket_all_parts(rocket, child_q.query(world), part_q.query(world))
+}
+
+// Really, this just finds all children who are rocket parts, including the rocket itself, but that works for how we use it
+pub fn rocket_all_parts(rocket: Entity, child_q: Query<&Children>, part_q: Query<&RocketPart>) -> Vec<Entity> {
+
+    let mut queue: Vec<Entity> = vec![rocket];
+    let mut parts: Vec<Entity> = Vec::new();
+
     while let Some(entity) = queue.pop() {
         println!("Parsing entity: {}", entity);
-        if let Ok(children) = child_q.get(world, entity) {
+        if let Ok(children) = child_q.get(entity) {
             for child in children {
                 println!("need to check child: {}", child);
                 queue.push(*child);
             }
         }
         // skip the rocket entity itself, or any exhausts
-        if part_q.get(world, entity).is_ok() {
+        if part_q.get(entity).is_ok() {
             println!("Found rocket part {}", entity);
             parts.push(entity);
         }
@@ -237,18 +245,13 @@ pub fn rocket_all_parts(world: &mut World, rocket: Entity) -> Vec<Entity> {
 }
 
 pub fn save_rocket(world: &mut World, rocket_entity: Entity) -> RocketSave {
-    // let rocket = world.get::<Rocket>(rocket_entity).unwrap();
-    // let Some(tail) = rocket.tail else {
-    //     warn!("SaveRocketCommand: rocket has no parts");
-    //     return RocketSave { name: "empty".into(), parts: Vec::new()};
-    // };
 
     let mut parts: Vec<RocketSavePart> = Vec::new();
     let mut entity_lookup: Vec<Entity> = Vec::new();
 
     let mut part_q = world.query::<(&PartId, &Transform, &ChildOf)>();
 
-    for current in rocket_all_parts(world, rocket_entity) {
+    for current in rocket_all_parts_world(world, rocket_entity) {
         if let Ok((id, tf, child_of)) = part_q.get(world, current) {
             parts.push(RocketSavePart {
                 id: id.0.clone(),
@@ -335,13 +338,13 @@ pub fn physics_step(
     time: Res<Time<Physics>>,
     bodies: Query<(Entity, &Transform, &CelestialBody)>,
     mut rocket_q: Query<
-        (&mut Transform, &ComputedCenterOfMass, &mut Rocket, Forces),
+        (Entity, &mut Transform, &ComputedCenterOfMass, &mut Rocket, Forces),
         Without<CelestialBody>,
     >,
-    mut part_parent_q: Query<(&mut RocketPart, &ChildOf)>,
-    // mut part_q: Query<&mut RocketPart>,
+    child_q: Query<&Children>,
+    mut part_q: Query<&mut RocketPart>,
 ) {
-    for (mut tf, com, mut rocket, mut forces) in rocket_q.iter_mut() {
+    for (rocket_entity, mut tf, com, mut rocket, mut forces) in rocket_q.iter_mut() {
         if rocket.crashed || rocket.landed {
             if let Some(landed_body) = rocket.landed_body {
                 let (_end, body_tf, _body) = bodies.get(landed_body).unwrap();
@@ -414,17 +417,20 @@ pub fn physics_step(
         }
 
         // Thrust — read engine thrust and consume fuel from the active stage's children
-        // if rocket.throttle > 0.0 || rocket.stage_active {
+        // if rocket.throttle > 0 || rocket.stage_active {
         let mut force: Vec2 = Vec2::ZERO;
+        let parts = rocket_all_parts(rocket_entity, child_q, part_q.as_readonly());
 
-        if let Some(tail) = todo!() {
-            let mut child = tail;
+        // if let Some(tail) = todo!() {
+            // let mut child = tail;
             let mut new_stage_fuel = 0.0;
             let mut new_stage_thrust = 0.0;
             let mut new_stage_capacity = 0.0;
             let mut new_stage_fuel_rate = 0.0;
-            while let Ok((mut part, parent)) = part_parent_q.get_mut(child) {
-                match part.as_mut() {
+            // while let Ok((mut part, parent)) = part_parent_q.get_mut(child) {
+            for part_entity in parts {
+                // let part = part_q.get(part_entity).unwrap();
+                match &mut *part_q.get_mut(part_entity).unwrap() {
                     RocketPart::Engine(engine) => {
                         new_stage_thrust += engine.thrust;
                         new_stage_fuel_rate += engine.fuel_rate;
@@ -441,11 +447,10 @@ pub fn physics_step(
                     }
                     RocketPart::Decoupler => {
                         // This is the end of the stage!
-                        break;
+                        // break;
                     }
                     _ => {}
                 }
-                child = parent.parent();
             }
 
             if rocket.stage_active {
@@ -462,7 +467,7 @@ pub fn physics_step(
                 rocket.throttle > 0.0 && rocket.stage_fuel > 0.0 && rocket.stage_thrust > 0.0;
             // println!("Rocket stuff: {} {} {}", new_stage_fuel, new_stage_thrust, rocket.stage_active);
             // }
-        }
+        // }
 
         forces.apply_force(force);
 

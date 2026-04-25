@@ -6,65 +6,68 @@ struct SeparateStage(Entity);
 
 impl Command for SeparateStage {
     fn apply(self, world: &mut World) {
-        let (lin_vel, tail) = {
-            let mut q = world.query::<(&LinearVelocity, &Rocket)>();
-            let (lv, r) = q.get(world, self.0).unwrap();
-            (*lv, todo!()/*r.tail*/)
-        };
 
-        let Some(tail_entity) = tail else { return };
+        // let Some(tail_entity) = tail else { return };
         let mut q = world.query::<(&RocketPart, &GlobalTransform, &ChildOf)>();
+        let entites = rocket_all_parts_world(world, self.0);
 
-        let mut current_entity = tail_entity;
-        loop {
+        // TODO: TEMP just find the first decopuler
+        for current_entity in entites.iter().rev() {
             let (part_is_decoupler, gt, parent) = {
-                let Ok((p, g, c)) = q.get(world, current_entity) else { return };
+                let Ok((p, g, c)) = q.get(world, *current_entity) else {
+                    return;
+                };
                 (matches!(p, RocketPart::Decoupler), *g, c.parent())
             };
 
             println!("Traversing {}", current_entity);
 
-            if part_is_decoupler {
-                let world_tf = gt.compute_transform();
-                let nose = world_tf.local_y().truncate();
-                let sep_vel = *lin_vel - STAGE_SEP_VEL * nose;
-                let soi_body = world.get::<Rocket>(self.0).unwrap().soi_body;
-                let new_rocket = world.spawn((
-                    Visibility::default(),
-                    world_tf,
-                    Rocket {/*  tail: Some(tail_entity),*/ soi_body, ..Default::default() },
-                    RigidBody::Dynamic,
-                    LinearVelocity(sep_vel),
-                    RigidBodyColliders::default(), // pre-seed so on_insert hooks push synchronously
-                )).id();
+            if !part_is_decoupler {
+                continue;
+            }
+            let world_tf = gt.compute_transform();
+            let nose = world_tf.local_y().truncate();
+            let lin_vel = world.get::<LinearVelocity>(self.0).unwrap().0;
+            let sep_vel = lin_vel - STAGE_SEP_VEL * nose;
+            let soi_body = world.get::<Rocket>(self.0).unwrap().soi_body;
+            let new_rocket = spawn_non_player_rocket(
+                world,
+                Transform::default(),
+                *current_entity,
+                Rocket {
+                    soi_body,
+                    ..Default::default()
+                },
+                LinearVelocity(sep_vel),
+            );
 
-                world.entity_mut(new_rocket).add_child(current_entity);
+            let mut tail_cmds = world.entity_mut(*current_entity);
+            tail_cmds
+                .get_mut::<Transform>()
+                .unwrap()
+                .set_if_neq(Transform::default());
 
-                let mut tail_cmds = world.entity_mut(current_entity);
-                tail_cmds.get_mut::<Transform>().unwrap()
-                    .set_if_neq(Transform::default());
-                tail_cmds.insert(ColliderOf{body: new_rocket});
-
-                let mut fix_collider_entity = tail_entity;
-                while fix_collider_entity != current_entity {
-                    let mut ent_mut = world.entity_mut(fix_collider_entity);
-                    let collider = ent_mut.take::<Collider>().unwrap();
-                    // ent_mut.insert(ColliderOf {body: new_rocket});
-                    // reinserting the collider seems to ACTUALLY fix it
-                    ent_mut.insert(collider);
-                    println!("Fixing: {}", fix_collider_entity);
-                    fix_collider_entity = ent_mut.get::<ChildOf>().unwrap().0;
-                }
-
-                // world.get_mut::<Rocket>(self.0).unwrap().tail = Some(parent);
-                world.entity_mut(self.0).insert(RecomputeMassProperties);
-                world.entity_mut(new_rocket).insert(RecomputeMassProperties);
-                println!("Parent Rocket colliders: {:?}", world.get::<RigidBodyColliders>(self.0).unwrap());
-                println!("New Rocket colliders: {:?}", world.get::<RigidBodyColliders>(new_rocket).unwrap());
-                return;
+            // NOTE: I fought this bug for forever: ColliderOf specifies the rigid body of a collider, but it
+            // was not getting updated properly, claude couldn't figure out how to fix it, but this works (I came up with this BTW, not claude)
+            // reinserting the collider seems to ACTUALLY fix it
+            for fix_collider_entity in rocket_all_parts_world(world, *current_entity) {
+                let mut ent_mut = world.entity_mut(fix_collider_entity);
+                let collider = ent_mut.take::<Collider>().unwrap();
+                ent_mut.insert(collider);
+                println!("Fixing: {}", fix_collider_entity);
             }
 
-            current_entity = parent;
+            world.entity_mut(self.0).insert(RecomputeMassProperties);
+            world.entity_mut(new_rocket).insert(RecomputeMassProperties);
+            println!(
+                "Parent Rocket colliders: {:?}",
+                world.get::<RigidBodyColliders>(self.0).unwrap()
+            );
+            println!(
+                "New Rocket colliders: {:?}",
+                world.get::<RigidBodyColliders>(new_rocket).unwrap()
+            );
+            return;
         }
     }
 }
@@ -112,9 +115,10 @@ pub fn handle_input(
 
     // Stage separation — find next decoupler and split the rocket there
     // TODO!!!!
-    if keys.just_pressed(KeyCode::Space) /* && rocket.tail.is_some() */{
-        todo!();
-        // commands.queue(SeparateStage(rocket_entity));
+    if keys.just_pressed(KeyCode::Space)
+    /* && rocket.tail.is_some() */
+    {
+        commands.queue(SeparateStage(rocket_entity));
         return;
     }
 
@@ -131,7 +135,7 @@ pub fn handle_input(
     rocket.throttle = if thrusting { 1.0 } else { 0.0 };
 
     if thrusting && rocket.landed {
-        commands.queue(rocket::Takeoff{rocket_entity});
+        commands.queue(rocket::Takeoff { rocket_entity });
     }
 
     // debugging tools NOTE: Could be moved to commands
