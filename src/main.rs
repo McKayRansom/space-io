@@ -39,7 +39,7 @@ const PLANET_MASS: f32 = PLANET_SURFACE_GRAVITY * (PLANET_RADIUS * PLANET_RADIUS
 const ROT_FORCE: f32 = 3000.0; // no idea on the units on this
 
 // const MOON_SURFACE_GRAVITY: f32 = PLANET_SURFACE_GRAVITY / 6.0;
-const MOON_SURFACE_GRAVITY: f32 = PLANET_SURFACE_GRAVITY /3.0;
+const MOON_SURFACE_GRAVITY: f32 = PLANET_SURFACE_GRAVITY / 3.0;
 const MOON_MASS: f32 = MOON_SURFACE_GRAVITY * (MOON_RADIUS * MOON_RADIUS) / G; // G·M_moon = 1·10⁶
 const MOON_RADIUS: f32 = 1000.0;
 const MOON_ORBIT: f32 = 20000.0; // distance from planet center
@@ -49,7 +49,7 @@ const LANDING_FORCE: f32 = 1000.0; // max force for a safe landing (can be moved
 const STAGE_SEP_VEL: f32 = 10.0;
 
 // ── Game constants ────────────────────────────────────────────────────────────────
-const DEFAULT_SCALE: f32 = 0.5;
+const DEFAULT_SCALE: f32 = 0.3;
 const MAP_VIEW_SCALE: f32 = 35.0;
 
 // ── State ──────────────────────────────────────────────────────────────────────

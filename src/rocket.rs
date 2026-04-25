@@ -154,7 +154,13 @@ pub struct SpawnRocketCommand {
     pub planet: Option<Entity>,
 }
 
-pub fn spawn_non_player_rocket(world: &mut World, transform: Transform, child: Entity, rocket: Rocket, velocity: LinearVelocity) -> Entity {
+pub fn spawn_non_player_rocket(
+    world: &mut World,
+    transform: Transform,
+    child: Entity,
+    rocket: Rocket,
+    velocity: LinearVelocity,
+) -> Entity {
     let state = world.resource::<State<AppState>>().get().clone();
 
     world
@@ -221,8 +227,11 @@ pub fn rocket_all_parts_world(world: &mut World, rocket: Entity) -> Vec<Entity> 
 }
 
 // Really, this just finds all children who are rocket parts, including the rocket itself, but that works for how we use it
-pub fn rocket_all_parts(rocket: Entity, child_q: Query<&Children>, part_q: Query<&RocketPart>) -> Vec<Entity> {
-
+pub fn rocket_all_parts(
+    rocket: Entity,
+    child_q: Query<&Children>,
+    part_q: Query<&RocketPart>,
+) -> Vec<Entity> {
     let mut queue: Vec<Entity> = vec![rocket];
     let mut parts: Vec<Entity> = Vec::new();
 
@@ -245,7 +254,6 @@ pub fn rocket_all_parts(rocket: Entity, child_q: Query<&Children>, part_q: Query
 }
 
 pub fn save_rocket(world: &mut World, rocket_entity: Entity) -> RocketSave {
-
     let mut parts: Vec<RocketSavePart> = Vec::new();
     let mut entity_lookup: Vec<Entity> = Vec::new();
 
@@ -272,25 +280,7 @@ pub fn save_rocket(world: &mut World, rocket_entity: Entity) -> RocketSave {
 }
 
 pub fn default_rocket() -> RocketSave {
-    RocketSave {
-        name: "Default Rocket".into(),
-        parts: [
-            RocketSavePart {
-                id: "command_pod_mk1".into(),
-                tf: Vec2::default(),
-                pt: 0,
-            },
-            // "decoupler_mk1".into(),
-            // "fuel_tank_mk1".into(),
-            // "engine_mk1".into(),
-            // "decoupler_mk1".into(),
-            // "fuel_tank_mk1".into(),
-            // "fuel_tank_mk1".into(),
-            // "engine_mk1".into(),
-            // "engine_mk1".into(),
-        ]
-        .to_vec(),
-    }
+    ron::de::from_str(include_str!("../assets/ships/default.ron")).unwrap()
 }
 
 // ── Animation ─────────────────────────────────────────────────────────────────────
@@ -338,7 +328,13 @@ pub fn physics_step(
     time: Res<Time<Physics>>,
     bodies: Query<(Entity, &Transform, &CelestialBody)>,
     mut rocket_q: Query<
-        (Entity, &mut Transform, &ComputedCenterOfMass, &mut Rocket, Forces),
+        (
+            Entity,
+            &mut Transform,
+            &ComputedCenterOfMass,
+            &mut Rocket,
+            Forces,
+        ),
         Without<CelestialBody>,
     >,
     child_q: Query<&Children>,
@@ -422,51 +418,51 @@ pub fn physics_step(
         let parts = rocket_all_parts(rocket_entity, child_q, part_q.as_readonly());
 
         // if let Some(tail) = todo!() {
-            // let mut child = tail;
-            let mut new_stage_fuel = 0.0;
-            let mut new_stage_thrust = 0.0;
-            let mut new_stage_capacity = 0.0;
-            let mut new_stage_fuel_rate = 0.0;
-            // while let Ok((mut part, parent)) = part_parent_q.get_mut(child) {
-            for part_entity in parts {
-                // let part = part_q.get(part_entity).unwrap();
-                match &mut *part_q.get_mut(part_entity).unwrap() {
-                    RocketPart::Engine(engine) => {
-                        new_stage_thrust += engine.thrust;
-                        new_stage_fuel_rate += engine.fuel_rate;
-                        engine.active = rocket.stage_active;
-                    }
-                    RocketPart::FuelTank(tank) => {
-                        new_stage_fuel += tank.fuel;
-                        new_stage_capacity += tank.capacity;
-                        if rocket.stage_active {
-                            tank.fuel -=
-                                (rocket.stage_fuel_rate * (tank.fuel / rocket.stage_fuel) * dt)
-                                    .max(0.0);
-                        }
-                    }
-                    RocketPart::Decoupler => {
-                        // This is the end of the stage!
-                        // break;
-                    }
-                    _ => {}
+        // let mut child = tail;
+        let mut new_stage_fuel = 0.0;
+        let mut new_stage_thrust = 0.0;
+        let mut new_stage_capacity = 0.0;
+        let mut new_stage_fuel_rate = 0.0;
+        // while let Ok((mut part, parent)) = part_parent_q.get_mut(child) {
+        for part_entity in parts {
+            // let part = part_q.get(part_entity).unwrap();
+            match &mut *part_q.get_mut(part_entity).unwrap() {
+                RocketPart::Engine(engine) => {
+                    new_stage_thrust += engine.thrust;
+                    new_stage_fuel_rate += engine.fuel_rate;
+                    engine.active = rocket.stage_active;
                 }
+                RocketPart::FuelTank(tank) => {
+                    new_stage_fuel += tank.fuel;
+                    new_stage_capacity += tank.capacity;
+                    if rocket.stage_active {
+                        tank.fuel -=
+                            (rocket.stage_fuel_rate * (tank.fuel / rocket.stage_fuel) * dt)
+                                .max(0.0);
+                    }
+                }
+                RocketPart::Decoupler => {
+                    // This is the end of the stage!
+                    // break;
+                }
+                _ => {}
             }
+        }
 
-            if rocket.stage_active {
-                let nose = tf.local_y().truncate();
-                force += nose * rocket.stage_thrust;
-            }
+        if rocket.stage_active {
+            let nose = tf.local_y().truncate();
+            force += nose * rocket.stage_thrust;
+        }
 
-            // update for next frame
-            rocket.stage_fuel = new_stage_fuel;
-            rocket.stage_capacity = new_stage_capacity;
-            rocket.stage_thrust = new_stage_thrust;
-            rocket.stage_fuel_rate = new_stage_fuel_rate;
-            rocket.stage_active =
-                rocket.throttle > 0.0 && rocket.stage_fuel > 0.0 && rocket.stage_thrust > 0.0;
-            // println!("Rocket stuff: {} {} {}", new_stage_fuel, new_stage_thrust, rocket.stage_active);
-            // }
+        // update for next frame
+        rocket.stage_fuel = new_stage_fuel;
+        rocket.stage_capacity = new_stage_capacity;
+        rocket.stage_thrust = new_stage_thrust;
+        rocket.stage_fuel_rate = new_stage_fuel_rate;
+        rocket.stage_active =
+            rocket.throttle > 0.0 && rocket.stage_fuel > 0.0 && rocket.stage_thrust > 0.0;
+        // println!("Rocket stuff: {} {} {}", new_stage_fuel, new_stage_thrust, rocket.stage_active);
+        // }
         // }
 
         forces.apply_force(force);

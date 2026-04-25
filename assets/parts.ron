@@ -32,10 +32,10 @@
             name: "Mk1 Engine",
             mass: 3.0,
             sprite_index: 32,
-            size: (14.0, 5.0),
+            size: (14.0, 4.0),
             kind: Engine(thrust: 300, fuel_rate: 1.0),
             anim: Some((48, 50)),
-            sprite_rect: Some((0.0, 0.0, 16.0, 5.0)),
+            sprite_rect: Some((0.0, 0.0, 16.0, 4.0)),
         ),
     ]
 )
