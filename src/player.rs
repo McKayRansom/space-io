@@ -6,68 +6,77 @@ struct SeparateStage(Entity);
 
 impl Command for SeparateStage {
     fn apply(self, world: &mut World) {
-
         // let Some(tail_entity) = tail else { return };
-        let mut q = world.query::<(&RocketPart, &GlobalTransform, &ChildOf)>();
+        let mut q = world.query::<(&mut RocketPart, &GlobalTransform, &PartStage)>();
         let entites = rocket_all_parts_world(world, self.0);
+
+        // let to_stage: Vec<Entity> = Vec::new();
 
         // TODO: TEMP just find the first decopuler
         for current_entity in entites.iter().rev() {
-            let (part_is_decoupler, gt, parent) = {
-                let Ok((p, g, c)) = q.get(world, *current_entity) else {
-                    return;
-                };
-                (matches!(p, RocketPart::Decoupler), *g, c.parent())
-            };
+            let (mut part, gt, _stage) = q.get_mut(world, *current_entity).unwrap();
 
             println!("Traversing {}", current_entity);
 
-            if !part_is_decoupler {
-                continue;
+            match &mut *part {
+                // TODO: Parachute from command module for now...
+                RocketPart::CommandPod => {
+                    // TODO
+                }
+                RocketPart::Engine(engine) => {
+                    if !engine.activated {
+                        engine.activated = true;
+                        return;
+                    }
+                }
+                RocketPart::Decoupler => {
+                    println!("Separating at {}", current_entity);
+                    let world_tf = gt.compute_transform();
+                    let nose = world_tf.local_y().truncate();
+                    let lin_vel = world.get::<LinearVelocity>(self.0).unwrap().0;
+                    let sep_vel = lin_vel - STAGE_SEP_VEL * nose;
+                    let soi_body = world.get::<Rocket>(self.0).unwrap().soi_body;
+                    let new_rocket = spawn_non_player_rocket(
+                        world,
+                        world_tf,
+                        *current_entity,
+                        Rocket {
+                            soi_body,
+                            ..Default::default()
+                        },
+                        LinearVelocity(sep_vel),
+                    );
+
+                    let mut tail_cmds = world.entity_mut(*current_entity);
+                    tail_cmds
+                        .get_mut::<Transform>()
+                        .unwrap()
+                        .set_if_neq(Transform::default());
+
+                    // NOTE: I fought this bug for forever: ColliderOf specifies the rigid body of a collider, but it
+                    // was not getting updated properly, claude couldn't figure out how to fix it, but this works (I came up with this BTW, not claude)
+                    // reinserting the collider seems to ACTUALLY fix it
+                    for fix_collider_entity in rocket_all_parts_world(world, *current_entity) {
+                        let mut ent_mut = world.entity_mut(fix_collider_entity);
+                        let collider = ent_mut.take::<Collider>().unwrap();
+                        ent_mut.insert(collider);
+                        println!("Fixing: {}", fix_collider_entity);
+                    }
+
+                    world.entity_mut(self.0).insert(RecomputeMassProperties);
+                    world.entity_mut(new_rocket).insert(RecomputeMassProperties);
+                    println!(
+                        "Parent Rocket colliders: {:?}",
+                        world.get::<RigidBodyColliders>(self.0).unwrap()
+                    );
+                    println!(
+                        "New Rocket colliders: {:?}",
+                        world.get::<RigidBodyColliders>(new_rocket).unwrap()
+                    );
+                    return;
+                }
+                _ => {}
             }
-            let world_tf = gt.compute_transform();
-            let nose = world_tf.local_y().truncate();
-            let lin_vel = world.get::<LinearVelocity>(self.0).unwrap().0;
-            let sep_vel = lin_vel - STAGE_SEP_VEL * nose;
-            let soi_body = world.get::<Rocket>(self.0).unwrap().soi_body;
-            let new_rocket = spawn_non_player_rocket(
-                world,
-                Transform::default(),
-                *current_entity,
-                Rocket {
-                    soi_body,
-                    ..Default::default()
-                },
-                LinearVelocity(sep_vel),
-            );
-
-            let mut tail_cmds = world.entity_mut(*current_entity);
-            tail_cmds
-                .get_mut::<Transform>()
-                .unwrap()
-                .set_if_neq(Transform::default());
-
-            // NOTE: I fought this bug for forever: ColliderOf specifies the rigid body of a collider, but it
-            // was not getting updated properly, claude couldn't figure out how to fix it, but this works (I came up with this BTW, not claude)
-            // reinserting the collider seems to ACTUALLY fix it
-            for fix_collider_entity in rocket_all_parts_world(world, *current_entity) {
-                let mut ent_mut = world.entity_mut(fix_collider_entity);
-                let collider = ent_mut.take::<Collider>().unwrap();
-                ent_mut.insert(collider);
-                println!("Fixing: {}", fix_collider_entity);
-            }
-
-            world.entity_mut(self.0).insert(RecomputeMassProperties);
-            world.entity_mut(new_rocket).insert(RecomputeMassProperties);
-            println!(
-                "Parent Rocket colliders: {:?}",
-                world.get::<RigidBodyColliders>(self.0).unwrap()
-            );
-            println!(
-                "New Rocket colliders: {:?}",
-                world.get::<RigidBodyColliders>(new_rocket).unwrap()
-            );
-            return;
         }
     }
 }

@@ -285,7 +285,7 @@ impl Command for SpawnRocketPart {
         if let MouseOverState::Selected(old_entity) = world.resource::<MouseOverState>() {
             world.despawn(*old_entity);
         }
-        let id = spawn_rocket_part(world, self.id.clone(), Vec2::ZERO);
+        let id = spawn_rocket_part(world, self.id.clone(), Vec2::ZERO, 0);
         world.entity_mut(id).insert(ColliderDisabled);
         world.insert_resource(MouseOverState::Selected(id));
     }

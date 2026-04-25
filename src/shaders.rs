@@ -2,13 +2,19 @@
 #![allow(unused)]
 
 use bevy::{
-    prelude::*, render::render_resource::{AsBindGroup, ShaderType}, shader::ShaderRef, sprite_render::{AlphaMode2d, Material2d, Material2dPlugin},
+    prelude::*,
+    render::render_resource::{AsBindGroup, ShaderType},
+    shader::ShaderRef,
+    sprite_render::{AlphaMode2d, Material2d, Material2dPlugin},
     // render::render_resource::{AsBindGroup, ShaderRef, ShaderType},
     // sprite::{AlphaMode2d, Material2d, Material2dPlugin},
 };
 use rand::Rng;
 
-use crate::{MOON_RADIUS, PLANET_RADIUS, terrain::{BodyTerrainParams, OrbitViewMesh, TerrainViewMesh}};
+use crate::{
+    terrain::{BodyTerrainParams, OrbitViewMesh, TerrainViewMesh},
+    MOON_RADIUS, PLANET_ATMOSPHERE_MAX, PLANET_HEIGHT_MAX, PLANET_RADIUS,
+};
 
 #[derive(Resource)]
 pub struct Materials {
@@ -299,9 +305,9 @@ struct TerrainMaterialUniform {
     base_radius_frac: f32,
     height_scale_frac: f32,
     pixels: f32,
+    atmosphere_radius: f32,
     _pad0: u32,
     _pad1: u32,
-    _pad2: u32,
 }
 
 #[derive(Asset, TypePath, AsBindGroup, Clone, Debug)]
@@ -337,12 +343,13 @@ fn terrain_planet_mat(
                 planet_color(0.310, 0.643, 0.722), // shallow river
                 planet_color(0.251, 0.286, 0.451), // deep river
             ],
-            base_radius_frac: 0.8,
-            height_scale_frac: 0.2,
+            base_radius_frac: PLANET_RADIUS / PLANET_ATMOSPHERE_MAX,
+            height_scale_frac: (PLANET_HEIGHT_MAX - PLANET_RADIUS) / PLANET_ATMOSPHERE_MAX,
             pixels: PLANET_RADIUS,
+            atmosphere_radius: 1.0,
             _pad0: 0,
             _pad1: 0,
-            _pad2: 0,
+            // _pad2: 0,
         },
         heightmap,
     })
@@ -361,9 +368,9 @@ fn terrain_moon_mat(
             base_radius_frac: 0.8,
             height_scale_frac: 0.2,
             pixels: MOON_RADIUS,
+            atmosphere_radius: 0.0,
             _pad0: 0,
             _pad1: 0,
-            _pad2: 0,
         },
         heightmap,
     })

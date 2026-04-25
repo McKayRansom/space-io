@@ -11,6 +11,7 @@ struct TerrainMaterialUniform {
     base_radius_frac: f32,
     height_scale_frac: f32,
     pixels: f32,
+    atmosphere_radius: f32,
     _pad0: u32,
     _pad1: u32,
 }
@@ -48,7 +49,12 @@ fn fragment(in: VertexOutput) -> @location(0) vec4<f32> {
 
     // Discard pixels above the terrain surface (transparent sky)
     if r_normalized > surface_r {
-        discard;
+        if r_normalized > material.atmosphere_radius {
+            discard;
+        }
+        var col = material.colors[4];
+        let a = (material.atmosphere_radius - r_normalized) / (material.atmosphere_radius - material.base_radius_frac);
+        return vec4<f32>(col.rgb, col.a * a);
     }
 
     // Relcalc with 

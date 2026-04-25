@@ -75,10 +75,12 @@ pub fn spawn_body(
 ) -> Entity {
     let planet_mesh = meshes.add(Rectangle::new(body.radius * 2.0, body.radius * 2.0));
     // planet terrain mesh is slightly bigger...
-    let planet_terrain_mesh = meshes.add(Rectangle::new(
-        (body.radius + terrain_params.height_scale) * 2.0,
-        (body.radius + terrain_params.height_scale) * 2.0,
-    ));
+    let mesh_size = if let Some(atmos) = &body.atmosphere {
+        atmos.extent * 2.0
+    } else {
+        (body.radius + terrain_params.height_scale) * 2.0
+    };
+    let planet_terrain_mesh = meshes.add(Rectangle::new(mesh_size, mesh_size));
 
     let planet_terrain = shader_mats.spawn_shader(
         commands,
@@ -175,13 +177,13 @@ pub fn setup_bodies(
             None,
             None,
             Some(Atmosphere {
-                extent: PLANET_RADIUS * 1.2,
+                extent: PLANET_ATMOSPHERE_MAX,
                 drag: 0.2,
             }),
         ),
         BodyTerrainParams {
             base_radius: PLANET_RADIUS,
-            height_scale: (PLANET_RADIUS / 0.8) * 0.2,
+            height_scale: PLANET_HEIGHT_MAX - PLANET_RADIUS,
             heights: heights,
         },
         BodyShaderParams {

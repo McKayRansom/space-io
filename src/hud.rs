@@ -7,7 +7,6 @@ use avian2d::{
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
-    text::TextLayoutInfo,
 };
 
 use crate::{
@@ -266,8 +265,8 @@ pub fn draw_orbit(gizmos: &mut Gizmos, focus: Vec2, orbit: OrbitalParameters) {
                 + orbit.center
                 + orbit
                     .rot
-                    .rotate(Vec2::new(orbit.a * theta.cos(), orbit.b * theta.sin()))
-        ).extend(1.0) // draw behind stuff
+                    .rotate(Vec2::new(orbit.a * theta.cos(), orbit.b * theta.sin())))
+            .extend(1.0) // draw behind stuff
         })
         .collect();
 
@@ -381,7 +380,7 @@ fn nav_calc_margin(angle: f32, pro: &'static str, retro: &'static str) -> (f32, 
 pub fn update_hud(
     rocket_q: Query<(&Transform, &LinearVelocity, &Rocket), With<PlayerRocket>>,
     planet_q: Query<(&Transform, &LinearVelocity), With<CelestialBody>>,
-    mut hud_q: Query<(&HudLabel, &mut Text, &mut Node, Option<&TextLayoutInfo>)>,
+    mut hud_q: Query<(&HudLabel, &mut Text, &mut Node)>,
 ) {
     let Ok((tf, velocity, rocket)) = rocket_q.single() else {
         return;
@@ -392,7 +391,7 @@ pub fn update_hud(
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);
     let speed = velocity.length();
 
-    for (label, mut text, mut node, layout_info) in &mut hud_q {
+    for (label, mut text, mut node) in &mut hud_q {
         *text = Text::new(match label {
             HudLabel::Alt => format!("ALT  {:>8.0} m", alt),
             HudLabel::Vel => format!("VEL  {:>8.1} m/s", speed),
@@ -444,8 +443,7 @@ impl Plugin for HudPlugin {
         app.add_systems(Startup, hud_init);
         app.add_systems(
             Update,
-            (update_trajectory, update_hud, update_fps)
-                .run_if(in_state(AppState::Playing)),
+            (update_trajectory, update_hud, update_fps).run_if(in_state(AppState::Playing)),
         );
         app.add_systems(
             FixedUpdate,

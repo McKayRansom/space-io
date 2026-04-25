@@ -45,7 +45,7 @@ const MOON_RADIUS: f32 = 1000.0;
 const MOON_ORBIT: f32 = 20000.0; // distance from planet center
 
 const BREAK_FORCE: f32 = 20000.0; // max force for a safe landing (can be moved to part eventually)
-const LANDING_FORCE: f32 = 1000.0; // max force for a safe landing (can be moved to part eventually)
+const _LANDING_FORCE: f32 = 1000.0; // max force for a safe landing (can be moved to part eventually)
 const STAGE_SEP_VEL: f32 = 10.0;
 
 // ── Game constants ────────────────────────────────────────────────────────────────

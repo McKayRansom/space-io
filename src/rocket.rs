@@ -1,10 +1,12 @@
+use std::collections::VecDeque;
+
 use avian2d::prelude::*;
 use bevy::{log, prelude::*};
 
 use crate::{
     body::{setup_bodies, CelestialBody, PlanetEntity},
     parts::{PartKind, PartsCatalog, SpritesheetInfo},
-    AppState, BREAK_FORCE, G, LANDING_FORCE, PLANET_RADIUS, ROT_FORCE,
+    AppState, BREAK_FORCE, G, PLANET_RADIUS, ROT_FORCE,
 };
 
 use serde::{Deserialize, Serialize};
@@ -53,6 +55,7 @@ pub struct Engine {
     thrust: f32, // units/s²
     fuel_rate: f32,
     active: bool,
+    pub activated: bool,
 }
 
 #[derive(Component)]
@@ -62,6 +65,9 @@ pub enum RocketPart {
     Engine(Engine),
     FuelTank(FuelTank),
 }
+
+#[derive(Component)]
+pub struct PartStage(pub usize);
 
 // impl RocketPart {
 //     pub fn size(&self) -> Vec2 {
@@ -96,7 +102,7 @@ pub struct RocketSavePart {
 #[derive(Resource)]
 pub struct PlayerRocketSave(pub RocketSave);
 
-pub fn spawn_rocket_part(world: &mut World, id: String, transform: Vec2) -> Entity {
+pub fn spawn_rocket_part(world: &mut World, id: String, transform: Vec2, stage: usize) -> Entity {
     let catalog = world.get_resource::<PartsCatalog>().unwrap();
     let part_def = catalog.find(&id).unwrap().clone();
     let sprite = part_def.sprite(world.get_resource::<SpritesheetInfo>().unwrap());
@@ -111,6 +117,7 @@ pub fn spawn_rocket_part(world: &mut World, id: String, transform: Vec2) -> Enti
         PartKind::Engine { thrust, fuel_rate } => RocketPart::Engine(Engine {
             thrust,
             fuel_rate,
+            activated: false,
             active: false,
         }),
     };
@@ -140,6 +147,7 @@ pub fn spawn_rocket_part(world: &mut World, id: String, transform: Vec2) -> Enti
         Collider::rectangle(part_def.size.0, part_def.size.1),
         Mass(part_def.mass),
         PartId(id),
+        PartStage(stage),
     ));
     if let Some(exhaust) = exhaust {
         entity.add_child(exhaust);
@@ -200,7 +208,7 @@ impl Command for SpawnRocketCommand {
 
         let mut entity_lookup: Vec<Entity> = Vec::new();
         for (i, part) in self.rocket_save.parts.iter().enumerate() {
-            let id = spawn_rocket_part(world, part.id.clone(), part.tf);
+            let id = spawn_rocket_part(world, part.id.clone(), part.tf, i);
             if i > 0 {
                 if let Some(parent_id) = entity_lookup.get(part.pt) {
                     world.entity_mut(*parent_id).add_child(id);
@@ -232,20 +240,21 @@ pub fn rocket_all_parts(
     child_q: Query<&Children>,
     part_q: Query<&RocketPart>,
 ) -> Vec<Entity> {
-    let mut queue: Vec<Entity> = vec![rocket];
+    let mut queue: VecDeque<Entity> = VecDeque::new();
+    queue.push_back(rocket);
     let mut parts: Vec<Entity> = Vec::new();
 
-    while let Some(entity) = queue.pop() {
-        println!("Parsing entity: {}", entity);
+    while let Some(entity) = queue.pop_front() {
+        // println!("Parsing entity: {}", entity);
         if let Ok(children) = child_q.get(entity) {
             for child in children {
-                println!("need to check child: {}", child);
-                queue.push(*child);
+                // println!("need to check child: {}", child);
+                queue.push_back(*child);
             }
         }
         // skip the rocket entity itself, or any exhausts
         if part_q.get(entity).is_ok() {
-            println!("Found rocket part {}", entity);
+            // println!("Found rocket part {}", entity);
             parts.push(entity);
         }
     }
@@ -424,10 +433,13 @@ pub fn physics_step(
         let mut new_stage_capacity = 0.0;
         let mut new_stage_fuel_rate = 0.0;
         // while let Ok((mut part, parent)) = part_parent_q.get_mut(child) {
-        for part_entity in parts {
+        for part_entity in parts.iter().rev() {
             // let part = part_q.get(part_entity).unwrap();
-            match &mut *part_q.get_mut(part_entity).unwrap() {
+            match &mut *part_q.get_mut(*part_entity).unwrap() {
                 RocketPart::Engine(engine) => {
+                    if !engine.activated {
+                        continue;
+                    }
                     new_stage_thrust += engine.thrust;
                     new_stage_fuel_rate += engine.fuel_rate;
                     engine.active = rocket.stage_active;
@@ -443,7 +455,7 @@ pub fn physics_step(
                 }
                 RocketPart::Decoupler => {
                     // This is the end of the stage!
-                    // break;
+                    break;
                 }
                 _ => {}
             }
@@ -562,7 +574,7 @@ pub fn collision_handler(
         let body1 = contact_pair.body1.unwrap();
         let body2 = contact_pair.body2.unwrap();
 
-        let (mut rocket, rocket_entity, part_entity, other_entity) =
+        let (rocket, rocket_entity, part_entity, other_entity) =
             if let Ok(rocket) = rocket_q.get_mut(body1) {
                 (rocket, body1, contact_pair.collider1, body2)
             } else if let Ok(rocket) = rocket_q.get_mut(body2) {
