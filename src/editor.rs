@@ -556,7 +556,17 @@ fn system_drag(
         // Cursor is inside another part — find the nearest free adjacent position.
         // NOTE: Dir::new() can fail on a zero vector.
         let parent_tf = global_tf.get(hit_entity).unwrap();
-        if let Ok(dir) = Dir::new(parent_tf.translation().truncate() - world_pos) {
+        let mut pos_diff = parent_tf.translation().truncate() - world_pos;
+
+        // Let's try snapping a bit
+        if pos_diff.x.abs() < 5.0 {
+            pos_diff.x = 0.0;
+        }
+        if pos_diff.y.abs() < 5.0 {
+            pos_diff.y = 0.0;
+        }
+
+        if let Ok(dir) = Dir::new(pos_diff) {
             let start_pos = parent_tf.translation().truncate() - dir * 50.0;
             if let Some(first_hit) = spatial_query.cast_shape(
                 collider,
