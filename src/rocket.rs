@@ -343,13 +343,14 @@ pub fn rocket_init(
     commands.queue(SpawnRocketCommand {
         transform: Transform::from_xyz(
             0.,
-            dbg!(player_rocket.0.height) + 10.0
-                + dbg!(sample_height(
+            player_rocket.0.height
+                + 10.0
+                + sample_height(
                     std::f32::consts::PI / 2.0,
                     body_terrain_params.base_radius,
                     body_terrain_params.height_scale,
                     body_terrain_params.heights.as_ref(),
-                )),
+                ),
             1.0,
         ),
         rocket_save: player_rocket.0.clone(),

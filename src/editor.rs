@@ -22,6 +22,7 @@ pub struct RocketNameInput;
 #[derive(Resource, Default)]
 pub struct TextInputState {
     pub value: String,
+    pub focused: bool,
 }
 
 #[derive(Component)]
@@ -164,6 +165,7 @@ pub fn build_editor_ui(mut commands: Commands, parts: Res<PartsCatalog>) {
                         ..default()
                     },
                     TextColor(Color::srgb(1.0, 1.0, 1.0)),
+                    Interaction::default(),
                     RocketNameInput,
                 ));
             });
@@ -301,13 +303,20 @@ pub fn handle_editor_input(
     mouse: Res<ButtonInput<MouseButton>>,
     mut key_events: MessageReader<KeyboardInput>,
     mut text_state: ResMut<TextInputState>,
-    mut name_input_q: Query<&mut Text, With<RocketNameInput>>,
+    mut name_input_q: Query<(&mut Text, &Interaction), With<RocketNameInput>>,
 ) {
     let Ok((rocket_entity, mut rocket)) = rocket_q.single_mut() else {
         return;
     };
 
     // println!("BAR");
+
+    // Focus / unfocus the name input on click
+    if mouse.just_pressed(MouseButton::Left) {
+        text_state.focused = name_input_q
+            .single()
+            .is_ok_and(|(_, i)| *i == Interaction::Pressed);
+    }
 
     // buttons
     if mouse.just_pressed(MouseButton::Left) {
@@ -351,22 +360,40 @@ pub fn handle_editor_input(
         }
     }
 
-    // Text input — typed characters update rocket name field
-    for event in key_events.read() {
-        if event.state != ButtonState::Pressed {
-            continue;
-        }
-        match &event.logical_key {
-            Key::Character(c) => text_state.value.push_str(c.as_str()),
-            Key::Backspace => {
-                text_state.value.pop();
+    // Text input — typed characters update rocket name field only when focused
+    if text_state.focused {
+        for event in key_events.read() {
+            if event.state != ButtonState::Pressed {
+                continue;
             }
-            _ => {}
+            match &event.logical_key {
+                Key::Character(c) => text_state.value.push_str(c.as_str()),
+                Key::Backspace => {
+                    text_state.value.pop();
+                }
+                _ => {}
+            }
+        }
+    } else {
+        // handle keyboard shortcuts when not focused, e.g. Ctrl+S to save
+        for event in key_events.read() {
+            if event.state != ButtonState::Pressed {
+                continue;
+            }
+            match &event.key_code {
+                KeyCode::Space => {
+                    commands.queue(LaunchRocketCommand {
+                        rocket: rocket_entity,
+                    });
+                    return;
+                }
+                _ => {}
+            }
         }
     }
 
     // Keep display in sync
-    if let Ok(mut text) = name_input_q.single_mut() {
+    if let Ok((mut text, _)) = name_input_q.single_mut() {
         **text = text_state.value.clone();
     }
 }

@@ -5,7 +5,8 @@ use bevy::{
 use serde::Deserialize;
 
 use crate::{
-    AppState, STARTING_STATE, rocket::{AnimationIndices, AnimationTimer}
+    rocket::{AnimationIndices, AnimationTimer},
+    AppState, STARTING_STATE,
 };
 
 // ── Part data definitions (loaded from assets/parts.ron) ──────────────────────
@@ -24,8 +25,22 @@ pub struct PartDef {
 
 #[derive(Resource)]
 pub struct SpritesheetInfo {
-    image: Handle<Image>,
-    layout: Handle<TextureAtlasLayout>,
+    pub image: Handle<Image>,
+    pub layout: Handle<TextureAtlasLayout>,
+}
+
+impl SpritesheetInfo {
+    pub fn image_node(&self, index: usize, color: Color) -> ImageNode {
+        ImageNode {
+            image: self.image.clone(),
+            texture_atlas: Some(TextureAtlas {
+                layout: self.layout.clone(),
+                index,
+            }),
+            color,
+            ..Default::default()
+        }
+    }
 }
 
 impl PartDef {
@@ -42,7 +57,10 @@ impl PartDef {
             ..Default::default()
         }
     }
-    pub fn build_anim(&self, spritesheet: &SpritesheetInfo) -> (Sprite, AnimationIndices, AnimationTimer) {
+    pub fn build_anim(
+        &self,
+        spritesheet: &SpritesheetInfo,
+    ) -> (Sprite, AnimationIndices, AnimationTimer) {
         (
             Sprite {
                 image: spritesheet.image.clone(),

@@ -1,9 +1,4 @@
-use std::f32::consts::PI;
-
-use avian2d::{
-    math::FRAC_PI_2,
-    prelude::{ComputedCenterOfMass, LinearVelocity},
-};
+use avian2d::prelude::{ComputedCenterOfMass, LinearVelocity};
 use bevy::{
     diagnostic::{DiagnosticsStore, FrameTimeDiagnosticsPlugin},
     prelude::*,
@@ -11,8 +6,9 @@ use bevy::{
 
 use crate::{
     body::CelestialBody,
+    parts::SpritesheetInfo,
     rocket::{PlayerRocket, Rocket},
-    AppState, MapView, DEFAULT_SCALE, G, MAP_VIEW_SCALE, PLANET_RADIUS,
+    AppState, MapView, DEFAULT_SCALE, G, MAP_VIEW_SCALE, PLANET_RADIUS, STARTING_STATE,
 };
 
 // HUD label — one enum covers all telemetry rows; add a variant to add a new row
@@ -22,21 +18,26 @@ pub enum HudLabel {
     Vel,
     Fuel,
     Status,
+}
+
+#[derive(Component, PartialEq, Eq)]
+pub enum HudSpriteLabel {
     Nav,
     NavVel,
 }
 #[derive(Component)]
 pub struct HudFps;
 
-const NAV_SIZE: usize = 32;
-const NAV_FONT_WIDTH: f32 = 7.5;
-
 const BLUE: Color = Color::srgb(0.55, 0.8, 1.0);
 const GREEN: Color = Color::srgb(0.55, 1.0, 0.55);
 const YELLOW: Color = Color::srgb(1.0, 0.82, 0.4);
 const RED: Color = Color::srgb(1.0, 0.35, 0.35);
 
-pub fn hud_init(mut commands: Commands, asset_server: Res<AssetServer>) {
+pub fn hud_init(
+    mut commands: Commands,
+    asset_server: Res<AssetServer>,
+    spritesheet_info: Res<SpritesheetInfo>,
+) {
     // Camera – start centered on the rocket
     commands.spawn((Camera2d, Transform::from_xyz(0., PLANET_RADIUS, 0.)));
 
@@ -99,50 +100,43 @@ pub fn hud_init(mut commands: Commands, asset_server: Res<AssetServer>) {
         HudLabel::Status,
     ));
     commands
-        .spawn(Node {
-            position_type: PositionType::Absolute,
-            bottom: Val::Px(30.),
-            left: Val::Percent(50.0),
-            right: Val::Percent(50.0),
-            justify_content: JustifyContent::Center,
-            ..default()
-        })
+        .spawn((
+            Node {
+                position_type: PositionType::Absolute,
+                bottom: Val::Px(64.0),
+                left: Val::Percent(50.0),
+                // right: Val::Px(80.0),
+                justify_content: JustifyContent::Center,
+                width: Val::Px(64.0),
+                height: Val::Px(64.0),
+                margin: UiRect::left(Val::Px(-32.0)),
+                ..default()
+            },
+            BackgroundColor(Color::srgba(0.1, 0.1, 0.15, 0.85)),
+        ))
         .with_children(|parent| {
             parent.spawn((
-                Text::new(format!("[{}]", " ".repeat(NAV_SIZE))),
-                mono.clone(),
-                TextColor(Color::WHITE),
+                spritesheet_info.image_node(16 * 15, Color::WHITE),
+                HudSpriteLabel::Nav,
                 Node {
                     position_type: PositionType::Absolute,
+                    width: Val::Px(32.0),
+                    height: Val::Px(32.0),
+                    top: Val::Px(16.),
+                    left: Val::Px(16.),
                     ..default()
                 },
             ));
             parent.spawn((
-                Text::new("U"),
-                mono.clone(),
-                TextColor(Color::WHITE),
-                HudLabel::Nav,
+                spritesheet_info.image_node(16 * 15, GREEN),
+                HudSpriteLabel::NavVel,
                 Node {
                     position_type: PositionType::Absolute,
-                    ..default()
-                },
-            ));
-            parent.spawn((
-                Text::new("+"),
-                mono.clone(),
-                TextColor(Color::WHITE),
-                Node {
-                    position_type: PositionType::Absolute,
-                    ..default()
-                },
-            ));
-            parent.spawn((
-                Text::new("o"),
-                mono.clone(),
-                TextColor(GREEN),
-                HudLabel::NavVel,
-                Node {
-                    position_type: PositionType::Absolute,
+                    width: Val::Px(32.0),
+                    height: Val::Px(32.0),
+                    top: Val::Px(16.),
+                    left: Val::Px(16.),
+                    // top: Val::Px(30.),
                     ..default()
                 },
             ));
@@ -356,31 +350,14 @@ pub fn follow_camera(
     proj.scale += (target_scale - proj.scale) * (6.0 * dt).min(1.0);
 }
 
-// calculates the margin in pixels of Nav-bar items given the angle in radians
-fn nav_calc_margin(angle: f32, pro: &'static str, retro: &'static str) -> (f32, &'static str) {
-    let (mark, rel_angle) = if angle.abs() < FRAC_PI_2 {
-        // we are pointing "UP"
-        (pro, -angle)
-    } else {
-        // we are pointing "DOWN"
-        (
-            retro,
-            if angle > FRAC_PI_2 {
-                -angle + PI
-            } else {
-                -angle - PI
-            },
-        )
-    };
-
-    let left_margin = ((rel_angle / PI) * NAV_SIZE as f32) * NAV_FONT_WIDTH;
-    (left_margin - NAV_FONT_WIDTH / 2.0, mark)
-}
-
 pub fn update_hud(
     rocket_q: Query<(&Transform, &LinearVelocity, &Rocket), With<PlayerRocket>>,
     planet_q: Query<(&Transform, &LinearVelocity), With<CelestialBody>>,
     mut hud_q: Query<(&HudLabel, &mut Text, &mut Node)>,
+    mut hud_sprite_q: Query<
+        (&HudSpriteLabel, &mut UiTransform, &mut ImageNode),
+        Without<LinearVelocity>,
+    >,
 ) {
     let Ok((tf, velocity, rocket)) = rocket_q.single() else {
         return;
@@ -391,7 +368,7 @@ pub fn update_hud(
     let alt = (tf.translation.truncate().length() - PLANET_RADIUS).max(0.0);
     let speed = velocity.length();
 
-    for (label, mut text, mut node) in &mut hud_q {
+    for (label, mut text, _node) in &mut hud_q {
         *text = Text::new(match label {
             HudLabel::Alt => format!("ALT  {:>8.0} m", alt),
             HudLabel::Vel => format!("VEL  {:>8.1} m/s", speed),
@@ -413,24 +390,28 @@ pub fn update_hud(
                     String::new()
                 }
             }
-            HudLabel::Nav => {
+        });
+    }
+    for (label, mut ui_tf, _sprite) in &mut hud_sprite_q {
+        ui_tf.rotation = match label {
+            HudSpriteLabel::Nav => {
                 let radial = (tf.translation.truncate() - body_tf.translation.truncate())
                     .normalize_or_zero();
                 let nose = (tf.rotation * Vec3::Y).truncate();
                 let angle = -radial.angle_to(nose);
-                let (margin, mark) = nav_calc_margin(angle, "U", "D");
-                node.left = Val::Px(margin);
-                mark.to_string()
+                Rot2::radians(angle)
             }
-            HudLabel::NavVel => {
+            HudSpriteLabel::NavVel => {
                 let nose = (tf.rotation * Vec3::Y).truncate();
                 let rel_vel = velocity.0 - body_vel.0;
-                let angle = -rel_vel.angle_to(nose);
-                let (margin, mark) = nav_calc_margin(angle, "o", "x");
-                node.left = Val::Px(margin);
-                mark.to_string()
+                let angle = rel_vel.angle_to(nose);
+                if angle.is_nan() {
+                    Rot2::radians(0.0)
+                } else {
+                    Rot2::radians(angle)
+                }
             }
-        });
+        };
     }
 }
 
@@ -440,7 +421,7 @@ pub struct HudPlugin;
 
 impl Plugin for HudPlugin {
     fn build(&self, app: &mut App) {
-        app.add_systems(Startup, hud_init);
+        app.add_systems(OnEnter(STARTING_STATE), hud_init);
         app.add_systems(
             Update,
             (update_trajectory, update_hud, update_fps).run_if(in_state(AppState::Playing)),
