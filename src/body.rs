@@ -86,7 +86,7 @@ pub fn spawn_body(
         commands,
         planet_terrain_mesh,
         shader_params.terrain,
-        Some(terrain_params),
+        Some(terrain_params.clone()),
     );
     let planet_map_view = shader_mats.spawn_shader(
         commands,
@@ -104,12 +104,13 @@ pub fn spawn_body(
         Transform::from_xyz(body.orbital_radius, 0.0, 0.0),
         Collider::circle(body.radius),
         LinearVelocity(if let Some(parent_mass) = body.parent_mass {
-            Vec2::new(0., (G * parent_mass / body.orbital_radius).sqrt())
+            Vec2::new(0., -(G * parent_mass / body.orbital_radius).sqrt())
             // Vec2::ZERO
         } else {
             Vec2::ZERO
         }),
         body,
+        terrain_params,
         // avian2d: circle collider stays as backstop; terrain polyline is primary
         RigidBody::Kinematic,
         // Restitution::new(0.0),

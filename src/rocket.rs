@@ -6,6 +6,7 @@ use bevy::{log, prelude::*};
 use crate::{
     body::{setup_bodies, CelestialBody, PlanetEntity},
     parts::{PartKind, PartsCatalog, SpritesheetInfo},
+    terrain::{sample_height, BodyTerrainParams},
     AppState, BREAK_FORCE, G, PLANET_RADIUS, ROT_FORCE,
 };
 
@@ -88,6 +89,7 @@ pub struct PartId(pub String);
 #[derive(Serialize, Deserialize, Clone)]
 pub struct RocketSave {
     pub name: String,
+    pub height: f32,
     pub parts: Vec<RocketSavePart>,
 }
 
@@ -264,26 +266,36 @@ pub fn rocket_all_parts(
 
 pub fn save_rocket(world: &mut World, rocket_entity: Entity) -> RocketSave {
     let mut parts: Vec<RocketSavePart> = Vec::new();
-    let mut entity_lookup: Vec<Entity> = Vec::new();
+    let mut entity_lookup: Vec<(Entity, f32)> = Vec::new();
+    let mut height: f32 = 0.0;
 
     let mut part_q = world.query::<(&PartId, &Transform, &ChildOf)>();
 
     for current in rocket_all_parts_world(world, rocket_entity) {
         if let Ok((id, tf, child_of)) = part_q.get(world, current) {
+            let mut parent_height = 0.0;
+            let parent = entity_lookup
+                .iter()
+                .position(|elem| {
+                    parent_height = elem.1;
+                    elem.0 == child_of.0
+                })
+                .unwrap_or(0);
+
             parts.push(RocketSavePart {
                 id: id.0.clone(),
                 tf: tf.translation.truncate(),
-                pt: entity_lookup
-                    .iter()
-                    .position(|elem| elem == &child_of.0)
-                    .unwrap_or(0),
+                pt: parent,
             });
-            entity_lookup.push(current);
+            let my_height = tf.translation.y + parent_height;
+            entity_lookup.push((current, my_height));
+            height = height.min(my_height);
         }
     }
 
     RocketSave {
         name: "Unnamed - TODO".into(),
+        height: dbg!(height.abs()),
         parts,
     }
 }
@@ -325,9 +337,21 @@ pub fn rocket_init(
     mut commands: Commands,
     player_rocket: Res<PlayerRocketSave>,
     planet_entity: Res<PlanetEntity>,
+    planet_heights: Query<&BodyTerrainParams>,
 ) {
+    let body_terrain_params = planet_heights.get(planet_entity.0).unwrap();
     commands.queue(SpawnRocketCommand {
-        transform: Transform::from_xyz(0., PLANET_RADIUS * 1.10, 1.0),
+        transform: Transform::from_xyz(
+            0.,
+            dbg!(player_rocket.0.height) + 10.0
+                + dbg!(sample_height(
+                    std::f32::consts::PI / 2.0,
+                    body_terrain_params.base_radius,
+                    body_terrain_params.height_scale,
+                    body_terrain_params.heights.as_ref(),
+                )),
+            1.0,
+        ),
         rocket_save: player_rocket.0.clone(),
         planet: Some(planet_entity.0),
     });

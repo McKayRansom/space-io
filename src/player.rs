@@ -114,7 +114,7 @@ pub fn handle_input(
     if keys.just_pressed(KeyCode::KeyR) {
         commands.entity(rocket_entity).despawn();
 
-        rocket_init(commands, player_rocket, planet);
+        commands.run_system_cached(rocket_init);
         return;
     }
 

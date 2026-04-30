@@ -123,7 +123,7 @@ fn fbm_cpu(coord: Vec2, size: f32, seed: f32, octaves: i32) -> f32 {
 
 /// Attached to each `CelestialBody` entity. Holds the pre-computed heightmap
 /// array for collider generation — same data uploaded to the GPU texture.
-#[derive(Component)]
+#[derive(Component, Clone)]
 pub struct BodyTerrainParams {
     pub base_radius: f32,
     pub height_scale: f32,
